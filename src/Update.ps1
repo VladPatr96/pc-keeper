@@ -542,11 +542,6 @@ function Get-PaperclipRepoPath {
         }
     }
 
-    $knownPath = 'D:\projects\Projects\github\paperclip\paperclip'
-    if (Test-Path (Join-Path $knownPath 'package.json')) {
-        return $knownPath
-    }
-
     ''
 }
 
