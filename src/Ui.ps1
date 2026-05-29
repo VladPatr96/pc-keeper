@@ -207,8 +207,9 @@ function Invoke-MainMenu {
     $index = 0
     $health = $null
 
+    Clear-Host
     while ($true) {
-        Clear-Host
+        [Console]::SetCursorPosition(0, 0)
         Show-Banner -Health $health
         Write-Host ''
         Write-Host "$script:Esc[90mUp/Down: navigate  Enter: open  R: refresh health  Q/Esc: quit$script:Esc[0m"
@@ -225,6 +226,8 @@ function Invoke-MainMenu {
                 Write-Host "$cursor $title  $script:Esc[90m$subtitle$script:Esc[0m"
             }
         }
+
+        Write-Host "$script:Esc[0J" -NoNewline
 
         $key = [Console]::ReadKey($true)
         switch ($key.Key) {
@@ -339,8 +342,10 @@ function Invoke-ChecklistMenu {
     }
 
     $index = 0
+    Clear-Host
     while ($true) {
-        Clear-Host
+        $fits = (3 + $Items.Count) -lt [Console]::WindowHeight
+        if ($fits) { [Console]::SetCursorPosition(0, 0) } else { Clear-Host }
         Write-Host $Title
         Write-Host 'Space: toggle  A: select all  I: invert  C: clear  Enter: run selected  Q/Esc: cancel'
         Write-Host ''
@@ -350,6 +355,8 @@ function Invoke-ChecklistMenu {
             $box = if ($Items[$i].Selected) { '[x]' } else { '[ ]' }
             Write-Host ("{0} {1} {2}" -f $cursor, $box, (& $ItemFormatter $Items[$i]))
         }
+
+        if ($fits) { Write-Host "$script:Esc[0J" -NoNewline }
 
         $key = [Console]::ReadKey($true)
         switch ($key.Key) {
