@@ -189,24 +189,37 @@ function Get-BrowserCacheTargets {
     $candidates
 }
 
+function Get-LargeOldFileRoots {
+    # Only scan folders where real user content lives. Scanning the whole
+    # profile (AppData, caches, node_modules) is slow and surfaces noise.
+    @(
+        (Join-Path $env:USERPROFILE 'Downloads')
+        (Join-Path $env:USERPROFILE 'Desktop')
+        (Join-Path $env:USERPROFILE 'Documents')
+        (Join-Path $env:USERPROFILE 'Videos')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+}
+
 function Get-LargeOldFiles {
     param(
-        [string] $Root = $env:USERPROFILE,
+        [string[]] $Roots = (Get-LargeOldFileRoots),
         [double] $MinimumSizeBytes = 524288000,
         [int] $OlderThanDays = 180,
         [int] $Top = 20
     )
 
-    if (-not $Root -or -not (Test-Path $Root)) {
+    $roots = @($Roots | Where-Object { $_ -and (Test-Path $_) })
+    if ($roots.Count -eq 0) {
         return @()
     }
 
     $cutoff = (Get-Date).AddDays(-$OlderThanDays)
-    $files = Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Length -ge $MinimumSizeBytes -and $_.LastWriteTime -lt $cutoff } |
-        Sort-Object Length -Descending |
-        Select-Object -First $Top
+    $found = foreach ($root in $roots) {
+        Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Length -ge $MinimumSizeBytes -and $_.LastWriteTime -lt $cutoff }
+    }
 
+    $files = @($found | Sort-Object Length -Descending | Select-Object -First $Top)
     foreach ($file in $files) {
         New-CleanupCandidate `
             -Category 'Large/old files' `
@@ -287,8 +300,7 @@ function Invoke-CleanupFlow {
     )
 
     Clear-Host
-    Write-Host 'Scanning cleanup targets...'
-    $targets = @(Get-CleanupTargets)
+    $targets = @(Show-Spinner -Message 'Scanning cleanup targets...' -ScriptBlock { Get-CleanupTargets })
     if ($targets.Count -eq 0) {
         Write-Host 'Nothing to clean.'
         return

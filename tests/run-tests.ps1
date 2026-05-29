@@ -127,6 +127,27 @@ It 'parses npm outdated json into update candidates' {
     Assert-Equal $items[1].Name '@openai/codex' 'second npm name'
 }
 
+It 'parses npm global list json and tolerates entries without a version' {
+    $json = @'
+{
+  "name": "npm-global",
+  "dependencies": {
+    "@anthropic-ai/claude-code": { "version": "1.0.3", "overridden": false },
+    "broken-package": { "required": "^2.0.0", "missing": true }
+  }
+}
+'@
+
+    $items = @(ConvertFrom-NpmListJson -Json $json)
+
+    Assert-Equal $items.Count 2 'npm list inventory count'
+    Assert-Equal $items[0].Name '@anthropic-ai/claude-code' 'npm list first name'
+    Assert-Equal $items[0].Version '1.0.3' 'npm list first version'
+    Assert-Equal $items[0].Source 'npm-global' 'npm list source'
+    Assert-Equal $items[1].Name 'broken-package' 'npm list keeps version-less entry'
+    Assert-Equal $items[1].Version '' 'npm list version-less entry has empty version'
+}
+
 It 'updates checklist state for space, all, and invert commands' {
     $items = @(
         [pscustomobject]@{ Id = 'a'; Selected = $false },

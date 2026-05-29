@@ -15,6 +15,7 @@ Export-ModuleMember -Function @(
     'ConvertFrom-GitLsRemoteText',
     'ConvertFrom-WingetUpgradeTable',
     'ConvertFrom-NpmOutdatedJson',
+    'ConvertFrom-NpmListJson',
     'ConvertFrom-ChocoOutdatedText',
     'ConvertFrom-ScoopStatusTable',
     'ConvertFrom-UninstallRegistryEntry',

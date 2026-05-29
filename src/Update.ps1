@@ -251,6 +251,40 @@ function Get-InstalledApplicationInventory {
         Sort-Object Name
 }
 
+function ConvertFrom-NpmListJson {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Json
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Json)) {
+        return @()
+    }
+
+    $parsed = $Json | ConvertFrom-Json
+    if (-not ($parsed.PSObject.Properties.Name -contains 'dependencies')) {
+        return @()
+    }
+
+    foreach ($property in $parsed.dependencies.PSObject.Properties) {
+        $value = $property.Value
+        $version = if ($value -and ($value.PSObject.Properties.Name -contains 'version')) {
+            [string] $value.version
+        }
+        else {
+            ''
+        }
+
+        [pscustomobject]@{
+            Name = $property.Name
+            Version = $version
+            Publisher = 'npm'
+            InstallLocation = ''
+            Source = 'npm-global'
+            UpdateProvider = 'npm-global'
+        }
+    }
+}
+
 function Get-NpmGlobalPackageInventory {
     if (-not (Test-CommandAvailable -Name 'npm')) {
         return @()
@@ -258,25 +292,7 @@ function Get-NpmGlobalPackageInventory {
 
     try {
         $result = Invoke-NativeText -FilePath 'npm' -Arguments @('list', '-g', '--depth=0', '--json')
-        if ([string]::IsNullOrWhiteSpace($result.StdOut)) {
-            return @()
-        }
-
-        $parsed = $result.StdOut | ConvertFrom-Json
-        if (-not ($parsed.PSObject.Properties.Name -contains 'dependencies')) {
-            return @()
-        }
-
-        foreach ($property in $parsed.dependencies.PSObject.Properties) {
-            [pscustomobject]@{
-                Name = $property.Name
-                Version = [string] $property.Value.version
-                Publisher = 'npm'
-                InstallLocation = ''
-                Source = 'npm-global'
-                UpdateProvider = 'npm-global'
-            }
-        }
+        ConvertFrom-NpmListJson -Json $result.StdOut
     }
     catch {
         Write-Warning "Could not read npm global inventory: $($_.Exception.Message)"
