@@ -226,14 +226,14 @@ function Invoke-MainMenu {
             }
         }
 
-        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-        switch ($key.VirtualKeyCode) {
-            13 { return $items[$index].Id }
-            27 { return '' }
-            38 { $index = Get-NextMenuIndex -Current $index -Delta -1 -Count $items.Count }
-            40 { $index = Get-NextMenuIndex -Current $index -Delta 1 -Count $items.Count }
+        $key = [Console]::ReadKey($true)
+        switch ($key.Key) {
+            'Enter'     { return $items[$index].Id }
+            'Escape'    { return '' }
+            'UpArrow'   { $index = Get-NextMenuIndex -Current $index -Delta -1 -Count $items.Count }
+            'DownArrow' { $index = Get-NextMenuIndex -Current $index -Delta 1 -Count $items.Count }
             default {
-                switch ($key.Character.ToString().ToLowerInvariant()) {
+                switch ($key.KeyChar.ToString().ToLowerInvariant()) {
                     'q' { return '' }
                     'r' { $health = Show-Spinner -Message 'Computing system health...' -ScriptBlock { Get-SystemHealthSummary } | Select-Object -First 1 }
                 }
@@ -272,7 +272,7 @@ function Invoke-PcKeeper {
 
         Write-Host ''
         Write-Host "$script:Esc[90mPress any key to return to the menu...$script:Esc[0m"
-        [void] $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        [void][Console]::ReadKey($true)
     }
 }
 
@@ -351,15 +351,15 @@ function Invoke-ChecklistMenu {
             Write-Host ("{0} {1} {2}" -f $cursor, $box, (& $ItemFormatter $Items[$i]))
         }
 
-        $key = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-        switch ($key.VirtualKeyCode) {
-            13 { return @($Items | Where-Object Selected) }
-            27 { return @() }
-            32 { Update-ChecklistState -Items $Items -Action ToggleCurrent -Index $index | Out-Null }
-            38 { if ($index -gt 0) { $index-- } }
-            40 { if ($index -lt ($Items.Count - 1)) { $index++ } }
+        $key = [Console]::ReadKey($true)
+        switch ($key.Key) {
+            'Enter'     { return @($Items | Where-Object Selected) }
+            'Escape'    { return @() }
+            'Spacebar'  { Update-ChecklistState -Items $Items -Action ToggleCurrent -Index $index | Out-Null }
+            'UpArrow'   { if ($index -gt 0) { $index-- } }
+            'DownArrow' { if ($index -lt ($Items.Count - 1)) { $index++ } }
             default {
-                switch ($key.Character.ToString().ToLowerInvariant()) {
+                switch ($key.KeyChar.ToString().ToLowerInvariant()) {
                     'a' { Update-ChecklistState -Items $Items -Action SelectAll -Index $index | Out-Null }
                     'c' { Update-ChecklistState -Items $Items -Action ClearAll -Index $index | Out-Null }
                     'i' { Update-ChecklistState -Items $Items -Action InvertAll -Index $index | Out-Null }

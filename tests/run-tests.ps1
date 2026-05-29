@@ -229,7 +229,7 @@ It 'installs update-all shim into a specified directory' {
     }
 
     $result = Install-ProgramUpdateAllCommand `
-        -ProjectRoot 'D:\projects\My_AI\program_update_all' `
+        -ProjectRoot $repoRoot `
         -ShimDirectory $dir `
         -CommandName 'update-all.cmd'
 
