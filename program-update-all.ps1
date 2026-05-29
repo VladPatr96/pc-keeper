@@ -13,4 +13,9 @@ $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot 'src/ProgramUpdateAll.psm1'
 Import-Module $modulePath -Force
 
-Invoke-ProgramUpdateAll @PSBoundParameters
+if ($PSBoundParameters.Count -eq 0) {
+    Invoke-PcKeeper
+}
+else {
+    Invoke-ProgramUpdateAll @PSBoundParameters
+}

@@ -428,6 +428,233 @@ It 'converts local git app metadata into inventory item' {
     Assert-Equal $item.InstallLocation 'D:\projects\Projects\github\paperclip\paperclip' 'local git install path'
 }
 
+It 'returns a distinct status glyph per status level' {
+    Assert-Equal (Get-StatusGlyph -Status 'Ok') ([char]0x2713) 'ok glyph'
+    Assert-Equal (Get-StatusGlyph -Status 'Warn') ([char]0x26A0) 'warn glyph'
+    Assert-Equal (Get-StatusGlyph -Status 'Bad') ([char]0x2717) 'bad glyph'
+    Assert-Equal (Get-StatusGlyph -Status 'Info') ([char]0x2022) 'info glyph'
+    Assert-Equal (Get-StatusGlyph -Status 'Unknown') ([char]0x2022) 'unknown falls back to info glyph'
+}
+
+It 'formats a status line containing the glyph, label, and value' {
+    $line = Format-StatusLine -Status 'Warn' -Label 'Disk C:' -Value '95% full'
+
+    Assert-Equal ($line -match 'Disk C:') $true 'status line includes label'
+    Assert-Equal ($line -match '95% full') $true 'status line includes value'
+    Assert-Equal ($line.Contains([char]0x26A0)) $true 'status line includes warn glyph'
+}
+
+It 'formats a status line without a trailing separator when value is empty' {
+    $line = Format-StatusLine -Status 'Ok' -Label 'Firewall' -Value ''
+
+    Assert-Equal ($line -match 'Firewall') $true 'label rendered'
+    Assert-Equal ($line -match 'Firewall:\s*$') $false 'no dangling colon for empty value'
+}
+
+It 'wraps the menu index when navigating past either end' {
+    Assert-Equal (Get-NextMenuIndex -Current 0 -Delta -1 -Count 4) 3 'up from top wraps to bottom'
+    Assert-Equal (Get-NextMenuIndex -Current 3 -Delta 1 -Count 4) 0 'down from bottom wraps to top'
+    Assert-Equal (Get-NextMenuIndex -Current 1 -Delta 1 -Count 4) 2 'down moves to next'
+    Assert-Equal (Get-NextMenuIndex -Current 0 -Delta -1 -Count 1) 0 'single item stays put'
+}
+
+It 'exposes the four PC Keeper pillars in the main menu' {
+    $items = @(Get-MainMenuItems)
+
+    Assert-Equal $items.Count 4 'main menu pillar count'
+    Assert-Equal $items[0].Id 'updates' 'first pillar is updates'
+    Assert-Equal $items[1].Id 'audit' 'second pillar is audit'
+    Assert-Equal $items[2].Id 'cleanup' 'third pillar is cleanup'
+    Assert-Equal $items[3].Id 'security' 'fourth pillar is security'
+}
+
+It 'converts byte counts into human readable sizes' {
+    Assert-Equal (ConvertTo-HumanSize -Bytes 0) '0 B' 'zero bytes'
+    Assert-Equal (ConvertTo-HumanSize -Bytes 512) '512 B' 'raw bytes'
+    Assert-Equal (ConvertTo-HumanSize -Bytes 1024) '1 KB' 'one kilobyte'
+    Assert-Equal (ConvertTo-HumanSize -Bytes 1536) '1.5 KB' 'fractional kilobytes'
+    Assert-Equal (ConvertTo-HumanSize -Bytes 1073741824) '1 GB' 'one gigabyte'
+    Assert-Equal (ConvertTo-HumanSize -Bytes 5368709120) '5 GB' 'five gigabytes'
+}
+
+It 'formats uptime with and without a day component' {
+    $withDays = Format-Uptime -Uptime (New-TimeSpan -Days 3 -Hours 4 -Minutes 12)
+    $withoutDays = Format-Uptime -Uptime (New-TimeSpan -Hours 5 -Minutes 30)
+
+    Assert-Equal $withDays '3d 4h 12m' 'uptime includes days'
+    Assert-Equal $withoutDays '5h 30m' 'uptime drops zero days'
+}
+
+It 'flags disks over ninety percent used as a warning' {
+    Assert-Equal (Get-DiskUsageStatus -UsedBytes 95 -TotalBytes 100) 'Warn' 'nearly full disk warns'
+    Assert-Equal (Get-DiskUsageStatus -UsedBytes 50 -TotalBytes 100) 'Ok' 'half full disk is ok'
+    Assert-Equal (Get-DiskUsageStatus -UsedBytes 90 -TotalBytes 100) 'Ok' 'exactly ninety percent is ok'
+    Assert-Equal (Get-DiskUsageStatus -UsedBytes 0 -TotalBytes 0) 'Info' 'unknown capacity is info'
+}
+
+It 'formats a disk line with drive, free space, and percent used' {
+    $line = Format-DiskLine -Drive 'C:' -FreeBytes 5368709120 -TotalBytes 107374182400
+
+    Assert-Equal ($line -match 'C:') $true 'disk line includes drive letter'
+    Assert-Equal ($line -match '95% used') $true 'disk line includes percent used'
+    Assert-Equal ($line.Contains([char]0x26A0)) $true 'nearly full disk line uses warn glyph'
+}
+
+It 'builds a normalized cleanup candidate with safe defaults' {
+    $candidate = New-CleanupCandidate -Category 'Temp' -Name 'User temp' -Paths @('C:\t') -SizeBytes 2048 -RiskLevel 'Safe'
+
+    Assert-Equal $candidate.Category 'Temp' 'cleanup candidate category'
+    Assert-Equal $candidate.Name 'User temp' 'cleanup candidate name'
+    Assert-Equal $candidate.SizeBytes 2048 'cleanup candidate size'
+    Assert-Equal $candidate.RiskLevel 'Safe' 'cleanup candidate risk level'
+    Assert-Equal $candidate.Selected $false 'cleanup candidate not preselected'
+    Assert-Equal $candidate.RequiresAdmin $false 'cleanup candidate admin default'
+    Assert-Equal $candidate.RequiresClosedApp $false 'cleanup candidate closed-app default'
+    Assert-Equal @($candidate.Paths).Count 1 'cleanup candidate path count'
+}
+
+It 'only treats paths inside the whitelist roots as safe to delete' {
+    $roots = @('C:\Users\u\AppData\Local\Temp', 'C:\Windows\Temp')
+
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Users\u\AppData\Local\Temp\abc' -SafeRoots $roots) $true 'descendant of root is safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Users\u\AppData\Local\Temp' -SafeRoots $roots) $true 'the root itself is safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Windows\System32' -SafeRoots $roots) $false 'system folder is not safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Users\u\Documents' -SafeRoots $roots) $false 'documents are not safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Windows\Temp2\x' -SafeRoots $roots) $false 'sibling with shared prefix is not safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\' -SafeRoots $roots) $false 'drive root is not safe'
+    Assert-Equal (Test-IsSafeCleanupPath -Path 'C:\Windows\Temp\..\System32' -SafeRoots $roots) $false 'path traversal is rejected'
+}
+
+It 'sums the size of only the selected cleanup candidates' {
+    $items = @(
+        New-CleanupCandidate -Category 'Temp' -Name 'a' -Paths @('x') -SizeBytes 100 -RiskLevel 'Safe'
+        New-CleanupCandidate -Category 'Temp' -Name 'b' -Paths @('y') -SizeBytes 250 -RiskLevel 'Safe'
+        New-CleanupCandidate -Category 'Files' -Name 'c' -Paths @('z') -SizeBytes 999 -RiskLevel 'Review'
+    )
+    $items[0].Selected = $true
+    $items[1].Selected = $true
+
+    Assert-Equal (Get-SelectedCleanupSize -Candidates $items) 350 'sum of selected sizes'
+    Assert-Equal (Get-SelectedCleanupSize -Candidates @()) 0 'empty selection sums to zero'
+}
+
+It 'formats a cleanup candidate with category, name, and human size' {
+    $candidate = New-CleanupCandidate -Category 'Browser cache' -Name 'Edge cache' -Paths @('x') -SizeBytes 1572864 -RiskLevel 'Safe'
+
+    $line = Format-CleanupCandidate -Item $candidate
+
+    Assert-Equal ($line -match 'Browser cache') $true 'cleanup line includes category'
+    Assert-Equal ($line -match 'Edge cache') $true 'cleanup line includes name'
+    Assert-Equal ($line -match '1\.5 MB') $true 'cleanup line includes human size'
+}
+
+It 'builds a security finding with sensible defaults' {
+    $finding = New-SecurityFinding -Check 'smb1' -Status 'Bad' -Title 'SMBv1 enabled' -Detail 'Legacy protocol' `
+        -FixCommand 'Disable-WindowsOptionalFeature' -FixArguments @('-Online', '-FeatureName', 'SMB1Protocol') -Reversible $true
+
+    Assert-Equal $finding.Check 'smb1' 'finding check id'
+    Assert-Equal $finding.Status 'Bad' 'finding status'
+    Assert-Equal $finding.Title 'SMBv1 enabled' 'finding title'
+    Assert-Equal $finding.FixCommand 'Disable-WindowsOptionalFeature' 'finding fix command'
+    Assert-Equal @($finding.FixArguments).Count 3 'finding fix argument count'
+    Assert-Equal $finding.Reversible $true 'finding reversible flag'
+    Assert-Equal $finding.Selected $false 'finding not preselected'
+}
+
+It 'classifies a toggle finding against its desired state' {
+    Assert-Equal (Get-ToggleFindingStatus -ActualEnabled $true -ShouldBeEnabled $true) 'Ok' 'enabled when it should be is ok'
+    Assert-Equal (Get-ToggleFindingStatus -ActualEnabled $false -ShouldBeEnabled $true) 'Bad' 'disabled protection is bad'
+    Assert-Equal (Get-ToggleFindingStatus -ActualEnabled $false -ShouldBeEnabled $false) 'Ok' 'disabled when it should be is ok'
+    Assert-Equal (Get-ToggleFindingStatus -ActualEnabled $true -ShouldBeEnabled $false -Severity 'Warn') 'Warn' 'unwanted feature uses given severity'
+}
+
+It 'scores security findings weighting ok, warn, and bad' {
+    $findings = @(
+        New-SecurityFinding -Check 'a' -Status 'Ok' -Title 'a'
+        New-SecurityFinding -Check 'b' -Status 'Ok' -Title 'b'
+        New-SecurityFinding -Check 'c' -Status 'Ok' -Title 'c'
+        New-SecurityFinding -Check 'd' -Status 'Warn' -Title 'd'
+        New-SecurityFinding -Check 'e' -Status 'Bad' -Title 'e'
+        New-SecurityFinding -Check 'f' -Status 'Info' -Title 'f'
+    )
+
+    Assert-Equal (Get-SecurityScore -Findings $findings) 70 'weighted score ignoring info'
+    Assert-Equal (Get-SecurityScore -Findings @()) 100 'no findings is a perfect score'
+
+    $allBad = @(
+        New-SecurityFinding -Check 'x' -Status 'Bad' -Title 'x'
+        New-SecurityFinding -Check 'y' -Status 'Bad' -Title 'y'
+    )
+    Assert-Equal (Get-SecurityScore -Findings $allBad) 0 'all bad scores zero'
+}
+
+It 'lists only fixable security findings' {
+    $findings = @(
+        New-SecurityFinding -Check 'a' -Status 'Bad' -Title 'a' -FixCommand 'net'
+        New-SecurityFinding -Check 'b' -Status 'Info' -Title 'b'
+        New-SecurityFinding -Check 'c' -Status 'Warn' -Title 'c' -FixCommand 'netsh'
+    )
+
+    $fixable = @(Get-FixableSecurityFindings -Findings $findings)
+
+    Assert-Equal $fixable.Count 2 'only findings with a fix command are fixable'
+    Assert-Equal $fixable[0].Check 'a' 'first fixable finding'
+}
+
+It 'formats a security finding with title, detail, and fix marker' {
+    $finding = New-SecurityFinding -Check 'smb1' -Status 'Bad' -Title 'SMBv1 protocol' -Detail 'Enabled' -FixCommand 'powershell' -Reversible $true
+
+    $line = Format-SecurityFinding -Item $finding
+
+    Assert-Equal ($line -match 'SMBv1 protocol') $true 'security line includes title'
+    Assert-Equal ($line -match 'Enabled') $true 'security line includes detail'
+    Assert-Equal ($line -match 'reversible') $true 'security line marks reversible fixes'
+}
+
+It 'cycles spinner frames by index' {
+    $first = Get-SpinnerFrame -Index 0
+    $second = Get-SpinnerFrame -Index 1
+
+    Assert-Equal ($first -ne $second) $true 'consecutive frames differ'
+    Assert-Equal (Get-SpinnerFrame -Index 0) (Get-SpinnerFrame -Index 4) 'frames wrap around'
+    Assert-Equal (Get-SpinnerFrame -Index 1) (Get-SpinnerFrame -Index 5) 'frames wrap consistently'
+}
+
+It 'grades overall health from a score' {
+    Assert-Equal (Get-HealthGrade -Score 100) 'Ok' 'top score is ok'
+    Assert-Equal (Get-HealthGrade -Score 80) 'Ok' 'eighty is ok'
+    Assert-Equal (Get-HealthGrade -Score 79) 'Warn' 'just under eighty warns'
+    Assert-Equal (Get-HealthGrade -Score 50) 'Warn' 'fifty warns'
+    Assert-Equal (Get-HealthGrade -Score 49) 'Bad' 'below fifty is bad'
+    Assert-Equal (Get-HealthGrade -Score 0) 'Bad' 'zero is bad'
+}
+
+It 'renders an audit report as exportable text' {
+    $report = [pscustomobject]@{
+        Hardware = [pscustomobject]@{
+            OsName = 'Windows Test'
+            OsVersion = '10.0'
+            OsBuild = '22631'
+            Uptime = (New-TimeSpan -Hours 2 -Minutes 5)
+            Cpu = 'Test CPU'
+            CpuCores = 8
+            MemoryBytes = 17179869184
+            Gpu = 'Test GPU'
+            Motherboard = 'Test Board'
+            BiosVersion = '1.0'
+        }
+        Disks = @([pscustomobject]@{ Drive = 'C:'; FreeBytes = 1073741824; TotalBytes = 2147483648; FileSystem = 'NTFS' })
+        Startup = [pscustomobject]@{ StartupCommands = @(); StoppedAutoServices = @() }
+        Software = @()
+    }
+
+    $text = ConvertTo-AuditReportText -Report $report
+
+    Assert-Equal ($text -match 'PC Keeper Audit') $true 'report text has a heading'
+    Assert-Equal ($text -match 'Windows Test') $true 'report text includes the OS name'
+    Assert-Equal ($text -match 'C:') $true 'report text lists disks'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

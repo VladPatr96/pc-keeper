@@ -57,7 +57,8 @@ All logic lives in one module, [src/ProgramUpdateAll.psm1](src/ProgramUpdateAll.
 
 ## Working principles
 
+- **Tests first (mandatory).** Write the test(s) BEFORE writing any implementation code. For every new piece of logic: add a failing `It` + `Assert-Equal` test in [tests/run-tests.ps1](tests/run-tests.ps1) that pins the expected behavior, confirm it fails for the right reason, then write the minimum code to make it pass. Run the full suite before starting (must be green) and after each change. No production code lands without a test written first.
 - **Surgical changes.** The module is large and stylistically uniform (`Set-StrictMode -Version Latest`, backtick line continuations, `[pscustomobject]` outputs). Touch only what the task needs; don't refactor adjacent code or reformat untouched lines.
 - **Simplicity first.** Add the minimum code that solves the task. Don't introduce configurability or error handling for impossible cases beyond what the provider pattern already does.
-- **Verify first.** Express new parsing logic as a pure `ConvertFrom-*` function and cover it with an `It` + `Assert-Equal` test in [tests/run-tests.ps1](tests/run-tests.ps1). Run the full suite before and after.
+- **Verify first.** Express new logic as a pure function (`ConvertFrom-*`, `Format-*`, `Get-*Score`, `Test-Is*`) that takes data in and returns objects — these are what tests cover. Scanners that touch the system (CIM, registry, files, COM) stay thin wrappers around the pure functions and are not unit-tested. Interactive UI (`ReadKey`, `Clear-Host`) is never tested.
 - **Surface uncertainty.** When a new tool's output format or its admin requirements are ambiguous, ask rather than guessing silently.
