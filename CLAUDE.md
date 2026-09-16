@@ -62,3 +62,14 @@ All logic lives in one module, [src/ProgramUpdateAll.psm1](src/ProgramUpdateAll.
 - **Simplicity first.** Add the minimum code that solves the task. Don't introduce configurability or error handling for impossible cases beyond what the provider pattern already does.
 - **Verify first.** Express new logic as a pure function (`ConvertFrom-*`, `Format-*`, `Get-*Score`, `Test-Is*`) that takes data in and returns objects — these are what tests cover. Scanners that touch the system (CIM, registry, files, COM) stay thin wrappers around the pure functions and are not unit-tested. Interactive UI (`ReadKey`, `Clear-Host`) is never tested.
 - **Surface uncertainty.** When a new tool's output format or its admin requirements are ambiguous, ask rather than guessing silently.
+
+<!-- hq:start -->
+## Штаб hq
+
+Задачи, решения и память по этому проекту живут в штабе `D:/projects/my_projects/hq`, карточка — `projects/pc-keeper/README.md`.
+
+- **Что в работе** — раздел «Открытые задачи» в карточке и файлы `projects/pc-keeper/tasks/<номер>-<slug>.md`. Это зеркало GitHub Issues: руками не правь, оно пересобирается.
+- **Что уже решали** — «Память решений» в карточке и разборы в `projects/pc-keeper/memory/`. Упёрся или задача похожа на прошлую — сперва посмотри туда, а не решай заново.
+- **Задача** — один GitHub issue с меткой `task` и проверяемым условием готовности. Заводит его человек командой `/zadacha`; сам issue не создавай.
+- **Состояние** — метки `status:todo`, `status:in-progress`, `status:acceptance`; Done — закрытый issue. В `Done` переводит только человек.
+<!-- hq:end -->
