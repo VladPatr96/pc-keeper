@@ -976,6 +976,24 @@ It 'removes the candidate folder itself when RemoveSelf is set' {
     }
 }
 
+It 'plans the daily disk cleanup with a mode per location' {
+    $plan = @(Get-DailyCleanupPlan)
+    $byPath = @{}
+    foreach ($rule in $plan) { $byPath[$rule.Path] = $rule }
+
+    $orcaStaging = Join-Path $env:APPDATA 'orca\codex-runtime-home\home\.tmp\marketplaces\.staging'
+    Assert-Equal $byPath[$orcaStaging].Mode 'Stale' 'orca clones are removed when stale'
+    Assert-Equal $byPath[$orcaStaging].Pattern 'marketplace-upgrade-*' 'clone pattern'
+    Assert-Equal $byPath[(Join-Path $env:APPDATA 'npm\node_modules\@openai')].Pattern '.*-*' 'npm staging pattern'
+    Assert-Equal $byPath[(Join-Path $env:LOCALAPPDATA 'CrashDumps')].Mode 'Contents' 'crash dumps are emptied'
+    Assert-Equal $byPath[(Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer')].Pattern 'thumbcache_*.db' 'thumbnail cache files'
+    Assert-Equal $byPath[(Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin')].Mode 'OldVersions' 'old codex versions'
+    Assert-Equal (@($byPath[(Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin')].Procs) -contains 'codex') $true 'codex must be closed'
+    foreach ($rule in $plan) {
+        Assert-Equal (Test-IsSafeCleanupPath -Path $rule.Path) $true "rule path is whitelisted: $($rule.Path)"
+    }
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

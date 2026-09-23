@@ -74,6 +74,8 @@ Export-ModuleMember -Function @(
     'Test-IsSafeCleanupPath',
     'Select-StaleDirectories',
     'Select-OldVersionDirectories',
+    'Get-DailyCleanupPlan',
+    'Get-DailyCleanupTargets',
     'Get-SelectedCleanupSize',
     'Get-CleanupTargets',
     'Format-CleanupCandidate',

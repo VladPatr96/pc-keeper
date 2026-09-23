@@ -286,6 +286,80 @@ function Get-CleanupTargets {
     )
 }
 
+function New-DailyCleanupRule {
+    param(
+        [Parameter(Mandatory)] [string] $Name,
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [ValidateSet('Contents', 'Files', 'Stale', 'OldVersions')] [string] $Mode,
+        [string] $Pattern = '',
+        [string[]] $Procs = @()
+    )
+
+    [pscustomobject]@{ Name = $Name; Path = $Path; Mode = $Mode; Pattern = $Pattern; Procs = $Procs }
+}
+
+function Get-DailyCleanupPlan {
+    # What the unattended daily run removes: junk apps recreate on their own.
+    @(
+        New-DailyCleanupRule -Name 'User temp' -Path $env:TEMP -Mode 'Contents'
+        New-DailyCleanupRule -Name 'SquirrelTemp' -Path (Join-Path $env:LOCALAPPDATA 'SquirrelTemp') -Mode 'Contents'
+        New-DailyCleanupRule -Name 'CrashDumps' -Path (Join-Path $env:LOCALAPPDATA 'CrashDumps') -Mode 'Contents'
+        New-DailyCleanupRule -Name 'C:\tmp' -Path 'C:\tmp' -Mode 'Contents'
+        New-DailyCleanupRule -Name 'VS Code extension packages' -Path (Join-Path $env:APPDATA 'Code\CachedExtensionVSIXs') -Mode 'Contents'
+        New-DailyCleanupRule -Name 'INetCache' -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\INetCache') -Mode 'Contents'
+        New-DailyCleanupRule -Name 'Explorer thumbnails' -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer') -Mode 'Files' -Pattern 'thumbcache_*.db'
+        New-DailyCleanupRule -Name 'auto-claude-ui-updater' -Path (Join-Path $env:LOCALAPPDATA 'auto-claude-ui-updater') -Mode 'Contents'
+        foreach ($dir in Get-NpmGlobalScopeDirectories) {
+            New-DailyCleanupRule -Name "npm staging $(Split-Path $dir -Leaf)" -Path $dir -Mode 'Stale' -Pattern '.*-*'
+        }
+        foreach ($dir in Get-CodexStagingDirectories) {
+            New-DailyCleanupRule -Name 'Codex marketplace clones' -Path $dir -Mode 'Stale' -Pattern 'marketplace-upgrade-*'
+        }
+        New-DailyCleanupRule -Name 'Old Codex versions' -Path (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin') -Mode 'OldVersions' -Procs @('codex')
+    )
+}
+
+function Get-DailyCleanupTargets {
+    param(
+        [object[]] $Plan = (Get-DailyCleanupPlan)
+    )
+
+    foreach ($rule in $Plan) {
+        if (-not (Test-Path -LiteralPath $rule.Path)) {
+            continue
+        }
+
+        $busy = @($rule.Procs | Where-Object { Get-Process -Name $_ -ErrorAction SilentlyContinue })
+        if ($busy.Count -gt 0) {
+            continue
+        }
+
+        switch ($rule.Mode) {
+            'Contents' {
+                New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($rule.Path) -SizeBytes (Get-PathSizeBytes -Path $rule.Path)
+            }
+            'Files' {
+                $files = @(Get-ChildItem -LiteralPath $rule.Path -Filter $rule.Pattern -File -Force -ErrorAction SilentlyContinue)
+                if ($files.Count -gt 0) {
+                    New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($files.FullName) -SizeBytes ([double](($files | Measure-Object Length -Sum).Sum))
+                }
+            }
+            default {
+                $dirs = @(Get-ChildItem -LiteralPath $rule.Path -Directory -Force -ErrorAction SilentlyContinue)
+                $picked = if ($rule.Mode -eq 'Stale') {
+                    @(Select-StaleDirectories -Items $dirs -Pattern $rule.Pattern)
+                }
+                else {
+                    @(Select-OldVersionDirectories -Items $dirs)
+                }
+                foreach ($dir in $picked) {
+                    New-CleanupCandidate -Category 'Daily' -Name "$($rule.Name): $($dir.Name)" -Paths @($dir.FullName) -SizeBytes (Get-PathSizeBytes -Path $dir.FullName) -RemoveSelf $true
+                }
+            }
+        }
+    }
+}
+
 function Invoke-CleanupCandidate {
     param(
         [Parameter(Mandatory)] [object] $Candidate,
