@@ -8,8 +8,30 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'Audit.ps1')
 . (Join-Path $PSScriptRoot 'Cleanup.ps1')
 . (Join-Path $PSScriptRoot 'Security.ps1')
+. (Join-Path $PSScriptRoot 'Health.ps1')
 
 Export-ModuleMember -Function @(
+    'New-HealthTarget',
+    'ConvertFrom-UninstallExePath',
+    'ConvertFrom-ShimListing',
+    'Get-HealthAgentCatalog',
+    'Get-PeSubsystem',
+    'New-HealthResult',
+    'Resolve-HealthProbeResult',
+    'Resolve-GuiHealthResult',
+    'Find-DuplicateCommands',
+    'Get-CodexStateFindings',
+    'Get-HealthVerdict',
+    'Save-HealthResults',
+    'Read-HealthHistory',
+    'Test-IsHealthProblem',
+    'Format-HealthNotification',
+    'ConvertTo-HealthReportText',
+    'Get-HealthDataDirectory',
+    'Get-HealthTargets',
+    'Invoke-HealthProbe',
+    'Invoke-HealthCheck',
+    'Show-HealthToast',
     'ConvertFrom-ElectronAppUpdateYaml',
     'ConvertFrom-GitHubElectronReleaseJson',
     'ConvertFrom-GitLsRemoteText',

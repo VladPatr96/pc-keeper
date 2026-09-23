@@ -692,6 +692,177 @@ It 'renders an audit report as exportable text' {
     Assert-Equal ($text -match 'C:') $true 'report text lists disks'
 }
 
+It 'builds a health target with a stable key' {
+    $target = New-HealthTarget -Kind 'Cli' -Name 'rg' -Source 'choco' -Command 'C:\choco\bin\rg.exe' -ProbeArguments @('--version')
+
+    Assert-Equal $target.Key 'Cli/choco/rg' 'target key'
+    Assert-Equal $target.TimeoutSeconds 15 'default timeout'
+    Assert-Equal $target.ProbeArguments[0] '--version' 'probe arguments'
+}
+
+It 'resolves a GUI exe from DisplayIcon and skips uninstallers' {
+    Assert-Equal (ConvertFrom-UninstallExePath -DisplayIcon '"C:\Apps\Foo\foo.exe",0') 'C:\Apps\Foo\foo.exe' 'quoted icon with index'
+    Assert-Equal (ConvertFrom-UninstallExePath -DisplayIcon 'C:\Apps\Foo\app.ico') '' 'ico is not an exe'
+    Assert-Equal (ConvertFrom-UninstallExePath -DisplayIcon 'C:\Apps\Foo\unins000.exe' -InstallLocation 'C:\Apps\Foo' -InstallLocationFiles @('unins000.exe', 'Foo.exe')) 'C:\Apps\Foo\Foo.exe' 'falls back to install location, skipping uninstaller'
+    Assert-Equal (ConvertFrom-UninstallExePath -DisplayIcon '' -InstallLocation '' -InstallLocationFiles @()) '' 'nothing to resolve'
+}
+
+It 'lists commands from a shim directory without internal shims' {
+    $names = @(ConvertFrom-ShimListing -FileNames @('rg.exe', 'rg.exe.ignore', 'codex.cmd', 'codex', 'codex.ps1', 'volta-shim.exe', 'choco.exe', 'shimgen.exe') -Source 'npm')
+
+    Assert-Equal ($names -join ',') 'choco,codex,rg' 'unique command names'
+}
+
+It 'catalogs AI agents with a PONG prompt and long timeout' {
+    $agents = @(Get-HealthAgentCatalog)
+    $codex = $agents | Where-Object Name -eq 'codex'
+
+    Assert-Equal $agents.Count 6 'agent count'
+    Assert-Equal $codex.Kind 'Agent' 'agent kind'
+    Assert-Equal $codex.TimeoutSeconds 180 'agent timeout'
+    Assert-Equal ($codex.ProbeArguments -contains 'Reply with the single word PONG') $true 'PONG prompt'
+}
+
+It 'reads the PE subsystem of console and GUI executables' {
+    Assert-Equal (Get-PeSubsystem -Path "$env:windir\System32\cmd.exe") 3 'cmd is console'
+    Assert-Equal (Get-PeSubsystem -Path "$env:windir\System32\notepad.exe") 2 'notepad is GUI'
+    Assert-Equal (Get-PeSubsystem -Path "$env:windir\win.ini") 0 'not an exe'
+}
+
+It 'resolves CLI and agent probe results into health statuses' {
+    $cli = New-HealthTarget -Kind 'Cli' -Name 'rg' -Source 'choco'
+    $agent = New-HealthTarget -Kind 'Agent' -Name 'codex' -Source 'agent'
+    $ok = [pscustomobject]@{ ExitCode = 2; StdOut = 'usage: rg'; StdErr = ''; TimedOut = $false; DurationSeconds = 0.4 }
+    $pong = [pscustomobject]@{ ExitCode = 0; StdOut = "PONG`n"; StdErr = ''; TimedOut = $false; DurationSeconds = 28.6 }
+    $silent = [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = 'auth error'; TimedOut = $false; DurationSeconds = 3 }
+    $hung = [pscustomobject]@{ ExitCode = $null; StdOut = ''; StdErr = ''; TimedOut = $true; DurationSeconds = 180 }
+
+    Assert-Equal (Resolve-HealthProbeResult -Target $cli -NativeResult $ok).Status 'OK' 'CLI that runs is OK even with a non-zero exit code'
+    Assert-Equal (Resolve-HealthProbeResult -Target $cli -NativeResult $ok).Version '' 'no version parsed from usage text'
+    Assert-Equal (Resolve-HealthProbeResult -Target $agent -NativeResult $pong).Status 'OK' 'agent answered PONG'
+    Assert-Equal (Resolve-HealthProbeResult -Target $agent -NativeResult $pong).DurationSeconds 28.6 'agent duration kept'
+    Assert-Equal (Resolve-HealthProbeResult -Target $agent -NativeResult $silent).Status 'Failed' 'agent without PONG failed'
+    Assert-Equal ((Resolve-HealthProbeResult -Target $agent -NativeResult $silent).Detail -match 'auth error') $true 'failure detail from stderr'
+    Assert-Equal (Resolve-HealthProbeResult -Target $agent -NativeResult $hung).Status 'TimedOut' 'agent timed out'
+    Assert-Equal (Resolve-HealthProbeResult -Target $cli -ErrorMessage 'file not found').Status 'Failed' 'launch error'
+}
+
+It 'parses a version from CLI output' {
+    $cli = New-HealthTarget -Kind 'Cli' -Name 'codex' -Source 'volta'
+    $result = [pscustomobject]@{ ExitCode = 0; StdOut = 'codex-cli 0.156.1'; StdErr = ''; TimedOut = $false; DurationSeconds = 0.3 }
+
+    Assert-Equal (Resolve-HealthProbeResult -Target $cli -NativeResult $result).Version '0.156.1' 'normalized version'
+}
+
+It 'resolves GUI health from exe presence and signature' {
+    $gui = New-HealthTarget -Kind 'Gui' -Name 'Foo' -Source 'HKLM' -Path 'C:\Apps\foo.exe'
+
+    Assert-Equal (Resolve-GuiHealthResult -Target $gui -Exists $false).Status 'Missing' 'missing exe'
+    Assert-Equal (Resolve-GuiHealthResult -Target $gui -Exists $true -SignatureStatus 'HashMismatch').Status 'Broken' 'tampered exe'
+    Assert-Equal (Resolve-GuiHealthResult -Target $gui -Exists $true -SignatureStatus 'NotSigned' -FileVersion '1.2.3').Status 'OK' 'unsigned is fine'
+    Assert-Equal (Resolve-GuiHealthResult -Target $gui -Exists $true -SignatureStatus 'Valid' -FileVersion '1.2.3').Version '1.2.3' 'file version kept'
+}
+
+It 'flags a command installed from several sources with different versions' {
+    $results = @(
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'codex'; Source = 'volta'; Version = '0.156.1'; Status = 'OK' }
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'codex'; Source = 'npm'; Version = '0.154.0'; Status = 'OK' }
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'rg'; Source = 'choco'; Version = '14.1.0'; Status = 'OK' }
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'rg'; Source = 'scoop'; Version = '14.1.0'; Status = 'OK' }
+    )
+
+    $findings = @(Find-DuplicateCommands -Results $results)
+
+    Assert-Equal $findings.Count 1 'only differing versions are flagged'
+    Assert-Equal $findings[0].Name 'codex' 'duplicate command name'
+    Assert-Equal $findings[0].Status 'Warn' 'duplicate is a warning'
+    Assert-Equal ($findings[0].Detail -match 'npm 0\.154\.0') $true 'detail lists sources'
+}
+
+It 'reports codex sandbox setup errors and bloated marketplace staging' {
+    $codexHome = Join-Path ([IO.Path]::GetTempPath()) "pck-codex-$([guid]::NewGuid().ToString('N'))"
+    $staging = Join-Path $codexHome '.tmp\marketplaces\.staging'
+    New-Item -ItemType Directory -Force (Join-Path $codexHome '.sandbox'), $staging | Out-Null
+    try {
+        Assert-Equal @(Get-CodexStateFindings -CodexHome $codexHome -StagingFileLimit 3).Count 0 'clean state'
+
+        Set-Content (Join-Path $codexHome '.sandbox\setup_error.json') '{"code":"x"}'
+        1..4 | ForEach-Object { Set-Content (Join-Path $staging "f$_.txt") 'x' }
+        $findings = @(Get-CodexStateFindings -CodexHome $codexHome -StagingFileLimit 3)
+
+        Assert-Equal $findings.Count 2 'both findings'
+        Assert-Equal ($findings.Name -contains 'codex sandbox') $true 'sandbox finding'
+        Assert-Equal ($findings.Name -contains 'codex marketplace staging') $true 'staging finding'
+    }
+    finally {
+        Remove-Item -Recurse -Force $codexHome
+    }
+}
+
+It 'marks a probe slow against its recent median' {
+    $history = @(20, 25, 30, 28, 26) | ForEach-Object { [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = $_ } }
+    $slow = [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = 100; Detail = '' }
+    $normal = [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = 40; Detail = '' }
+    $fastButDouble = [pscustomobject]@{ Key = 'Cli/x/y'; Status = 'OK'; DurationSeconds = 5; Detail = '' }
+    $fastHistory = @(1, 1, 1) | ForEach-Object { [pscustomobject]@{ Key = 'Cli/x/y'; Status = 'OK'; DurationSeconds = $_ } }
+
+    Assert-Equal (Get-HealthVerdict -Result $slow -History $history).Status 'Slow' 'over twice the median'
+    Assert-Equal ((Get-HealthVerdict -Result $slow -History $history).Detail -match 'usually 26') $true 'detail shows the median'
+    Assert-Equal (Get-HealthVerdict -Result $normal -History $history).Status 'OK' 'within twice the median'
+    Assert-Equal (Get-HealthVerdict -Result $fastButDouble -History $fastHistory).Status 'OK' 'under the 30 s floor'
+    $fresh = [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = 100; Detail = '' }
+    Assert-Equal (Get-HealthVerdict -Result $fresh -History @($history[0], $history[1])).Status 'OK' 'too little history'
+}
+
+It 'saves health results per day and reads them back as history' {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "pck-health-$([guid]::NewGuid().ToString('N'))"
+    try {
+        $r = [pscustomobject]@{ Key = 'Agent/agent/codex'; Kind = 'Agent'; Name = 'codex'; Source = 'agent'; Status = 'OK'; DurationSeconds = 28.6; Version = ''; Detail = ''; CheckedAt = '' }
+        Save-HealthResults -Directory $dir -Results @($r) -Date (Get-Date).AddDays(-1)
+        Save-HealthResults -Directory $dir -Results @($r) -Date (Get-Date).AddDays(-40)
+
+        $history = @(Read-HealthHistory -Directory $dir)
+
+        Assert-Equal $history.Count 1 'old day pruned, recent day read'
+        Assert-Equal $history[0].DurationSeconds 28.6 'duration round-trips'
+    }
+    finally {
+        Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+    }
+}
+
+It 'builds a toast only when there are problems' {
+    $ok = [pscustomobject]@{ Kind = 'Cli'; Name = 'rg'; Status = 'OK'; Detail = '' }
+    $agentMissing = [pscustomobject]@{ Kind = 'Agent'; Name = 'grok'; Status = 'Missing'; Detail = '' }
+    Assert-Equal (Format-HealthNotification -Results @($ok, $agentMissing)) $null 'no toast when healthy'
+
+    $problems = @(
+        [pscustomobject]@{ Kind = 'Agent'; Name = 'codex'; Status = 'Slow'; Detail = 'took 100 s, usually 26 s' }
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'foo'; Status = 'TimedOut'; Detail = 'no answer within 15 s' }
+        [pscustomobject]@{ Kind = 'Gui'; Name = 'Bar'; Status = 'Missing'; Detail = 'exe not found' }
+        [pscustomobject]@{ Kind = 'Env'; Name = 'codex'; Status = 'Warn'; Detail = 'installed several times' }
+    )
+    $toast = Format-HealthNotification -Results ($problems + $ok)
+
+    Assert-Equal $toast.Title 'PC Keeper: 4 program problem(s)' 'toast title'
+    Assert-Equal $toast.Lines.Count 4 'three problems plus a more line'
+    Assert-Equal $toast.Lines[0] 'codex: Slow - took 100 s, usually 26 s' 'first line'
+    Assert-Equal $toast.Lines[3] '+1 more' 'overflow line'
+}
+
+It 'renders a health report with problems first' {
+    $results = @(
+        [pscustomobject]@{ Kind = 'Cli'; Name = 'rg'; Source = 'choco'; Status = 'OK'; DurationSeconds = 0.3; Version = '14.1.0'; Detail = '' }
+        [pscustomobject]@{ Kind = 'Agent'; Name = 'codex'; Source = 'agent'; Status = 'Slow'; DurationSeconds = 100; Version = ''; Detail = 'took 100 s, usually 26 s' }
+    )
+
+    $text = ConvertTo-HealthReportText -Results $results
+
+    Assert-Equal ($text -match 'PC Keeper Health') $true 'heading'
+    Assert-Equal ($text.IndexOf('codex') -lt $text.IndexOf('rg ')) $true 'problem listed before healthy'
+    Assert-Equal ($text -match 'Cli: 1 checked') $true 'per-kind counts'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }
