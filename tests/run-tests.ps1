@@ -233,6 +233,22 @@ It 'captures utf8 output from native commands without mojibake' {
     Assert-Equal $result.StdOut.Trim() 'Несколько пакетов' 'utf8 native command stdout'
 }
 
+It 'kills a native command that exceeds its timeout' {
+    $result = Invoke-NativeText -FilePath 'pwsh' -Arguments @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30') -TimeoutSeconds 2
+
+    Assert-Equal $result.TimedOut $true 'timed out flag'
+    Assert-Equal $result.ExitCode $null 'no exit code after timeout'
+    Assert-Equal ($result.DurationSeconds -lt 15) $true 'returned soon after the timeout'
+}
+
+It 'reports duration and no timeout for a quick native command' {
+    $result = Invoke-NativeText -FilePath 'cmd.exe' -Arguments @('/d', '/c', 'echo quick') -TimeoutSeconds 10
+
+    Assert-Equal $result.TimedOut $false 'not timed out'
+    Assert-Equal $result.StdOut.Trim() 'quick' 'stdout captured'
+    Assert-Equal ($result.DurationSeconds -ge 0) $true 'duration present'
+}
+
 It 'builds a command shim that forwards arguments to the project command' {
     $text = New-CommandShimText -TargetCommand 'D:\projects\My_AI\program_update_all\program-update-all.cmd'
 

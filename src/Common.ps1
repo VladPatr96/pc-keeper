@@ -38,7 +38,9 @@ function Resolve-ExternalCommandPath {
 function Invoke-NativeText {
     param(
         [Parameter(Mandatory)] [string] $FilePath,
-        [string[]] $Arguments = @()
+        [string[]] $Arguments = @(),
+        [int] $TimeoutSeconds = 0,
+        [string] $WorkingDirectory = ''
     )
 
     $resolvedPath = $FilePath
@@ -54,8 +56,12 @@ function Invoke-NativeText {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardInput = $TimeoutSeconds -gt 0
     $startInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new()
     $startInfo.StandardErrorEncoding = [Text.UTF8Encoding]::new()
+    if ($WorkingDirectory) {
+        $startInfo.WorkingDirectory = $WorkingDirectory
+    }
 
     foreach ($argument in $Arguments) {
         [void] $startInfo.ArgumentList.Add($argument)
@@ -63,16 +69,39 @@ function Invoke-NativeText {
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     [void] $process.Start()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+
+    $timedOut = $false
+    if ($TimeoutSeconds -gt 0) {
+        $process.StandardInput.Close()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $timedOut = $true
+            try { $process.Kill($true) } catch { }
+            [void] $process.WaitForExit(5000)
+        }
+
+        # A detached grandchild can keep the pipes open; never block on it.
+        $stdout = if ($stdoutTask.Wait(5000)) { $stdoutTask.Result } else { '' }
+        $stderr = if ($stderrTask.Wait(5000)) { $stderrTask.Result } else { '' }
+    }
+    else {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+    }
+
+    $stopwatch.Stop()
 
     [pscustomobject]@{
-        ExitCode = $process.ExitCode
+        ExitCode = if ($timedOut) { $null } else { $process.ExitCode }
         StdOut = $stdout
         StdErr = $stderr
         Text = ($stdout + [Environment]::NewLine + $stderr)
+        TimedOut = $timedOut
+        DurationSeconds = [Math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
     }
 }
 
