@@ -1026,6 +1026,93 @@ It 'accepts an offload copy only when file count and size match' {
     Assert-Equal (Test-OffloadCopyMatches -SourceCount 10 -SourceBytes 5000 -TargetCount 10 -TargetBytes 4999) $false 'short file'
 }
 
+It 'measures user folders one level down and system folders as a whole' {
+    $roots = Get-DiskMeasureRoots
+
+    Assert-Equal (@($roots.Expand) -contains (Join-Path $env:LOCALAPPDATA '')) $false 'no trailing-slash duplicates'
+    Assert-Equal (@($roots.Expand) -contains $env:LOCALAPPDATA) $true 'AppData\Local children'
+    Assert-Equal (@($roots.Expand) -contains $env:APPDATA) $true 'AppData\Roaming children'
+    Assert-Equal (@($roots.Expand) -contains $env:USERPROFILE) $true 'profile children'
+    Assert-Equal (@($roots.Expand) -contains $env:ProgramData) $true 'ProgramData children'
+    Assert-Equal (@($roots.Fixed) -contains (Join-Path $env:WINDIR 'WinSxS')) $true 'WinSxS as a whole'
+    Assert-Equal (@($roots.Fixed) -contains (Join-Path $env:WINDIR 'Installer')) $true 'Windows Installer as a whole'
+}
+
+It 'compares disk snapshots and ranks what grew' {
+    $previous = New-DiskSnapshot -Date ([datetime] '2026-09-22') -FreeBytes 12GB -Folders @(
+        [pscustomobject]@{ Path = 'C:\a'; Bytes = 1GB }
+        [pscustomobject]@{ Path = 'C:\b'; Bytes = 5GB }
+        [pscustomobject]@{ Path = 'C:\gone'; Bytes = 1GB }
+    )
+    $current = New-DiskSnapshot -Date ([datetime] '2026-09-23') -FreeBytes 9GB -Folders @(
+        [pscustomobject]@{ Path = 'C:\a'; Bytes = 3GB }
+        [pscustomobject]@{ Path = 'C:\b'; Bytes = 5GB + 10MB }
+        [pscustomobject]@{ Path = 'C:\new'; Bytes = 700MB }
+    )
+
+    $growth = @(Compare-DiskSnapshots -Current $current -Previous $previous -MinGrowthBytes 100MB)
+
+    Assert-Equal $growth.Count 2 'small growth and shrink are ignored'
+    Assert-Equal $growth[0].Path 'C:\a' 'largest growth first'
+    Assert-Equal $growth[0].GrowthBytes (2GB) 'growth amount'
+    Assert-Equal $growth[1].Path 'C:\new' 'new folder counts from zero'
+    Assert-Equal @(Compare-DiskSnapshots -Current $current -Previous $null).Count 0 'no baseline, no growth'
+}
+
+It 'picks yesterday and last week as baselines from the snapshot history' {
+    $snapshots = @(
+        New-DiskSnapshot -Date ([datetime] '2026-09-10') -FreeBytes 1 -Folders @()
+        New-DiskSnapshot -Date ([datetime] '2026-09-16') -FreeBytes 2 -Folders @()
+        New-DiskSnapshot -Date ([datetime] '2026-09-22') -FreeBytes 3 -Folders @()
+        New-DiskSnapshot -Date ([datetime] '2026-09-23') -FreeBytes 4 -Folders @()
+    )
+    $today = [datetime] '2026-09-23'
+
+    Assert-Equal (Select-DiskBaseline -Snapshots $snapshots -Date $today -DaysBack 1).FreeBytes 3 'yesterday'
+    Assert-Equal (Select-DiskBaseline -Snapshots $snapshots -Date $today -DaysBack 7).FreeBytes 2 'a week ago or earlier'
+    Assert-Equal (Select-DiskBaseline -Snapshots @($snapshots[3]) -Date $today -DaysBack 1) $null 'nothing older'
+}
+
+It 'saves disk snapshots per day and never deletes old ones' {
+    $dir = Join-Path $env:TEMP ("pck-disk-" + [guid]::NewGuid().ToString('N'))
+    try {
+        $old = New-DiskSnapshot -Date ([datetime] '2025-01-01') -FreeBytes 1GB -Folders @([pscustomobject]@{ Path = 'C:\x'; Bytes = 5 })
+        $new = New-DiskSnapshot -Date (Get-Date) -FreeBytes 2GB -Folders @([pscustomobject]@{ Path = 'C:\y'; Bytes = 7 })
+        Save-DiskSnapshot -Directory $dir -Snapshot $old
+        Save-DiskSnapshot -Directory $dir -Snapshot $new
+
+        $read = @(Read-DiskSnapshots -Directory $dir)
+
+        Assert-Equal $read.Count 2 'old snapshot kept'
+        Assert-Equal $read[0].Folders[0].Path 'C:\x' 'oldest first, folders round-trip'
+        Assert-Equal ([double] $read[1].FreeBytes) ([double] 2GB) 'free bytes round-trip'
+        Assert-Equal @(Read-DiskSnapshots -Directory (Join-Path $dir 'missing')).Count 0 'no history yet'
+    }
+    finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+It 'builds a disk toast only for low space or failures' {
+    $growth = @(
+        [pscustomobject]@{ Path = 'C:\Users\u\AppData\Roaming\orca'; Bytes = 6GB; GrowthBytes = 1GB }
+    )
+    $failed = [pscustomobject]@{ Key = 'codex'; Status = 'Failed'; Detail = 'source is in use, not moved'; MovedAside = '' }
+    $aside = [pscustomobject]@{ Key = 'orca'; Status = 'OK'; Detail = ''; MovedAside = 'D:\c-offload\orca-stale-2026-09-23' }
+
+    Assert-Equal (Format-DiskNotification -FreeBytes 20GB -ThresholdBytes 15GB -DayGrowth $growth) $null 'enough space, nothing failed'
+
+    $low = Format-DiskNotification -FreeBytes 9GB -ThresholdBytes 15GB -DayGrowth $growth
+    Assert-Equal $low.Title 'PC Keeper: only 9 GB free on C' 'low space title'
+    Assert-Equal $low.Lines[0] 'grew since yesterday: orca +1 GB' 'growth line names the folder'
+
+    $broken = Format-DiskNotification -FreeBytes 20GB -ThresholdBytes 15GB -OffloadResults @($failed, $aside) -CleanupFailures @([pscustomobject]@{ Path = 'C:\tmp'; Error = 'denied' })
+    Assert-Equal $broken.Title 'PC Keeper: disk maintenance problem' 'failure title'
+    Assert-Equal $broken.Lines[0] 'move codex failed: source is in use, not moved' 'offload failure first'
+    Assert-Equal $broken.Lines[1] 'cleanup failed: C:\tmp' 'cleanup failure'
+    Assert-Equal $broken.Lines[2] 'old copy moved aside: D:\c-offload\orca-stale-2026-09-23' 'moved-aside notice'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

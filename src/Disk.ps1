@@ -185,3 +185,155 @@ function Invoke-Offload {
         New-OffloadResult -Target $Target -Status 'Failed' -Action $action -MovedAside $movedAside -Detail $_.Exception.Message
     }
 }
+
+function Get-DiskMeasureRoots {
+    # Expand: every child folder is measured on its own (user data grows here and
+    # a new consumer must show up by name). Fixed: measured as one folder each.
+    [pscustomobject]@{
+        Expand = @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA, $env:ProgramData)
+        Fixed = @(
+            (Join-Path $env:WINDIR 'WinSxS')
+            (Join-Path $env:WINDIR 'Installer')
+            $env:ProgramFiles
+            ${env:ProgramFiles(x86)}
+        )
+    }
+}
+
+function New-DiskSnapshot {
+    param(
+        [Parameter(Mandatory)] [datetime] $Date,
+        [Parameter(Mandatory)] [double] $FreeBytes,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Folders
+    )
+
+    [pscustomobject]@{
+        Date = $Date.ToString('yyyy-MM-dd')
+        FreeBytes = $FreeBytes
+        Folders = @($Folders | ForEach-Object { [pscustomobject]@{ Path = $_.Path; Bytes = [double] $_.Bytes } })
+    }
+}
+
+function Compare-DiskSnapshots {
+    param(
+        [Parameter(Mandatory)] [object] $Current,
+        [AllowNull()] [object] $Previous,
+        [double] $MinGrowthBytes = 100MB
+    )
+
+    if (-not $Previous) {
+        return @()
+    }
+
+    $before = @{}
+    foreach ($folder in @($Previous.Folders)) { $before[$folder.Path] = [double] $folder.Bytes }
+
+    @($Current.Folders) |
+        ForEach-Object {
+            $was = if ($before.ContainsKey($_.Path)) { $before[$_.Path] } else { 0 }
+            [pscustomobject]@{ Path = $_.Path; Bytes = [double] $_.Bytes; GrowthBytes = [double] $_.Bytes - $was }
+        } |
+        Where-Object { $_.GrowthBytes -ge $MinGrowthBytes } |
+        Sort-Object GrowthBytes -Descending
+}
+
+function Select-DiskBaseline {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Snapshots,
+        [datetime] $Date = (Get-Date),
+        [int] $DaysBack = 1
+    )
+
+    $cutoff = $Date.Date.AddDays(-$DaysBack)
+    $Snapshots |
+        Where-Object { ([datetime] $_.Date).Date -le $cutoff } |
+        Sort-Object { [datetime] $_.Date } |
+        Select-Object -Last 1
+}
+
+function Get-DiskDataDirectory {
+    # History stays on D: drive C is the one that runs out of space.
+    'D:\pc-keeper-data\disk'
+}
+
+function Save-DiskSnapshot {
+    param(
+        [Parameter(Mandatory)] [string] $Directory,
+        [Parameter(Mandatory)] [object] $Snapshot
+    )
+
+    New-Item -ItemType Directory -Force $Directory | Out-Null
+    $path = Join-Path $Directory "$($Snapshot.Date).json"
+    ConvertTo-Json -InputObject $Snapshot -Depth 4 | Set-Content -LiteralPath $path -Encoding utf8
+}
+
+function Read-DiskSnapshots {
+    param(
+        [Parameter(Mandatory)] [string] $Directory
+    )
+
+    if (-not (Test-Path -LiteralPath $Directory)) {
+        return @()
+    }
+
+    Get-ChildItem -LiteralPath $Directory -Filter '????-??-??.json' |
+        Sort-Object Name |
+        ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json }
+}
+
+function Format-DiskGrowthLine {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [Parameter(Mandatory)] [object[]] $Growth
+    )
+
+    $items = @($Growth | Select-Object -First 3 | ForEach-Object {
+        "$(Split-Path $_.Path -Leaf) +$(ConvertTo-HumanSize -Bytes $_.GrowthBytes)"
+    })
+    "${Label}: $($items -join ', ')"
+}
+
+function Format-DiskNotification {
+    param(
+        [Parameter(Mandatory)] [double] $FreeBytes,
+        [double] $ThresholdBytes = 15GB,
+        [object[]] $DayGrowth = @(),
+        [object[]] $WeekGrowth = @(),
+        [object[]] $OffloadResults = @(),
+        [object[]] $CleanupFailures = @()
+    )
+
+    $lines = @()
+    foreach ($r in @($OffloadResults | Where-Object Status -eq 'Failed')) {
+        $lines += "move $($r.Key) failed: $($r.Detail)"
+    }
+    foreach ($f in @($CleanupFailures)) {
+        $lines += "cleanup failed: $($f.Path)"
+    }
+    $problems = $lines.Count
+    foreach ($r in @($OffloadResults | Where-Object { $_.MovedAside })) {
+        $lines += "old copy moved aside: $($r.MovedAside)"
+    }
+
+    $low = $FreeBytes -lt $ThresholdBytes
+    if ($low) {
+        if (@($DayGrowth).Count) { $lines += Format-DiskGrowthLine -Label 'grew since yesterday' -Growth $DayGrowth }
+        if (@($WeekGrowth).Count) { $lines += Format-DiskGrowthLine -Label 'grew in a week' -Growth $WeekGrowth }
+    }
+
+    if (-not $low -and $lines.Count -eq 0) {
+        return $null
+    }
+
+    $title = if ($low) {
+        "PC Keeper: only $(ConvertTo-HumanSize -Bytes $FreeBytes) free on C"
+    }
+    elseif ($problems) {
+        'PC Keeper: disk maintenance problem'
+    }
+    else {
+        'PC Keeper: disk maintenance note'
+    }
+
+    [pscustomobject]@{ Title = $title; Lines = @($lines | Select-Object -First 4) }
+}
