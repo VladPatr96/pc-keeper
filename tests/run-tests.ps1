@@ -912,6 +912,70 @@ It 'renders a health report with problems first' {
     Assert-Equal ($text -match 'Cli: 1 checked') $true 'per-kind counts'
 }
 
+It 'selects stale staging directories by pattern and age' {
+    $now = [datetime] '2026-09-23 12:00'
+    $items = @(
+        [pscustomobject]@{ Name = 'marketplace-upgrade-0FJMQS'; LastWriteTime = $now.AddHours(-5) }
+        [pscustomobject]@{ Name = 'marketplace-upgrade-fresh1'; LastWriteTime = $now.AddMinutes(-30) }
+        [pscustomobject]@{ Name = 'something-else'; LastWriteTime = $now.AddDays(-3) }
+    )
+
+    $stale = @(Select-StaleDirectories -Items $items -Pattern 'marketplace-upgrade-*' -OlderThanHours 2 -Now $now)
+
+    Assert-Equal $stale.Count 1 'only the old matching clone'
+    Assert-Equal $stale[0].Name 'marketplace-upgrade-0FJMQS' 'stale clone name'
+}
+
+It 'selects every version directory except the newest' {
+    $items = @(
+        [pscustomobject]@{ Name = '0.40.0'; LastWriteTime = [datetime] '2026-09-01' }
+        [pscustomobject]@{ Name = '0.42.0'; LastWriteTime = [datetime] '2026-09-20' }
+        [pscustomobject]@{ Name = '0.41.0'; LastWriteTime = [datetime] '2026-09-10' }
+    )
+
+    $old = @(Select-OldVersionDirectories -Items $items)
+
+    Assert-Equal $old.Count 2 'all but one'
+    Assert-Equal (@($old.Name) -contains '0.42.0') $false 'newest is kept'
+    Assert-Equal @(Select-OldVersionDirectories -Items @($items[0])).Count 0 'a single version is kept'
+}
+
+It 'whitelists the daily disk cleanup locations but not the app data around them' {
+    $clone = Join-Path $env:APPDATA 'orca\codex-runtime-home\home\.tmp\marketplaces\.staging\marketplace-upgrade-x'
+    $codexClone = Join-Path $env:USERPROFILE '.codex\.tmp\marketplaces\.staging\marketplace-upgrade-y'
+    $npmStaging = Join-Path $env:APPDATA 'npm\node_modules\@openai\.codex-AbC123'
+
+    Assert-Equal (Test-IsSafeCleanupPath -Path $clone) $true 'orca codex clone'
+    Assert-Equal (Test-IsSafeCleanupPath -Path $codexClone) $true 'codex clone'
+    Assert-Equal (Test-IsSafeCleanupPath -Path $npmStaging) $true 'npm staging dir'
+    Assert-Equal (Test-IsSafeCleanupPath -Path (Join-Path $env:LOCALAPPDATA 'CrashDumps\a.dmp')) $true 'crash dump'
+    Assert-Equal (Test-IsSafeCleanupPath -Path (Join-Path $env:APPDATA 'orca')) $false 'orca data itself'
+    Assert-Equal (Test-IsSafeCleanupPath -Path (Join-Path $env:APPDATA 'orca\codex-runtime-home\home')) $false 'orca codex home'
+}
+
+It 'removes the candidate folder itself when RemoveSelf is set' {
+    $dir = Join-Path $env:TEMP ("pck-removeself-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force (Join-Path $dir 'inner') | Out-Null
+    Set-Content -LiteralPath (Join-Path $dir 'inner\f.txt') -Value 'x'
+    $keep = Join-Path $env:TEMP ("pck-keepself-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $keep | Out-Null
+    Set-Content -LiteralPath (Join-Path $keep 'f.txt') -Value 'x'
+    try {
+        $gone = New-CleanupCandidate -Category 'Stale' -Name 'clone' -Paths @($dir) -RemoveSelf $true
+        $emptied = New-CleanupCandidate -Category 'Temp' -Name 'temp' -Paths @($keep)
+
+        $failures = @(Invoke-CleanupCandidate -Candidate $gone) + @(Invoke-CleanupCandidate -Candidate $emptied)
+
+        Assert-Equal $failures.Count 0 'no failures'
+        Assert-Equal (Test-Path -LiteralPath $dir) $false 'folder removed'
+        Assert-Equal (Test-Path -LiteralPath $keep) $true 'default keeps the folder'
+        Assert-Equal @(Get-ChildItem -LiteralPath $keep -Force).Count 0 'default empties the folder'
+    }
+    finally {
+        Remove-Item -LiteralPath $dir, $keep -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

@@ -72,6 +72,8 @@ Export-ModuleMember -Function @(
     'Show-AuditReport',
     'New-CleanupCandidate',
     'Test-IsSafeCleanupPath',
+    'Select-StaleDirectories',
+    'Select-OldVersionDirectories',
     'Get-SelectedCleanupSize',
     'Get-CleanupTargets',
     'Format-CleanupCandidate',

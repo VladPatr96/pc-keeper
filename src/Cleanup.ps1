@@ -11,7 +11,9 @@ function New-CleanupCandidate {
         [double] $SizeBytes = 0,
         [ValidateSet('Safe', 'Review')] [string] $RiskLevel = 'Safe',
         [bool] $RequiresAdmin = $false,
-        [bool] $RequiresClosedApp = $false
+        [bool] $RequiresClosedApp = $false,
+        # Remove the path itself (a stale clone, an old version), not just its contents.
+        [bool] $RemoveSelf = $false
     )
 
     [pscustomobject]@{
@@ -22,6 +24,7 @@ function New-CleanupCandidate {
         RiskLevel = $RiskLevel
         RequiresAdmin = $RequiresAdmin
         RequiresClosedApp = $RequiresClosedApp
+        RemoveSelf = $RemoveSelf
         Selected = $false
     }
 }
@@ -42,7 +45,52 @@ function Get-CleanupSafeRoots {
         (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data\Default\Cache')
         (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data\Default\Code Cache')
         (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data\Default\GPUCache')
+        (Join-Path $env:LOCALAPPDATA 'SquirrelTemp')
+        (Join-Path $env:LOCALAPPDATA 'CrashDumps')
+        'C:\tmp'
+        (Join-Path $env:APPDATA 'Code\CachedExtensionVSIXs')
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\INetCache')
+        (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer')
+        (Join-Path $env:LOCALAPPDATA 'auto-claude-ui-updater')
+        (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin')
+        (Get-CodexStagingDirectories)
+        (Get-NpmGlobalScopeDirectories)
     ) | Where-Object { $_ }
+}
+
+function Get-CodexStagingDirectories {
+    # Codex clones its plugin marketplace here on every upgrade attempt and never
+    # removes the clone; orca embeds its own Codex home with the same leak.
+    @(
+        (Join-Path $env:USERPROFILE '.codex')
+        (Join-Path $env:APPDATA 'orca\codex-runtime-home\home')
+    ) | ForEach-Object { Join-Path $_ '.tmp\marketplaces\.staging' }
+}
+
+function Get-NpmGlobalScopeDirectories {
+    # npm i -g unpacks into "<scope>\.<name>-<suffix>" and renames it; an interrupted
+    # install leaves the dot-folder behind.
+    @('@openai', '@anthropic-ai', '@google') | ForEach-Object { Join-Path $env:APPDATA "npm\node_modules\$_" }
+}
+
+function Select-StaleDirectories {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Items,
+        [Parameter(Mandatory)] [string] $Pattern,
+        [int] $OlderThanHours = 2,
+        [datetime] $Now = (Get-Date)
+    )
+
+    $cutoff = $Now.AddHours(-$OlderThanHours)
+    $Items | Where-Object { $_.Name -like $Pattern -and $_.LastWriteTime -lt $cutoff }
+}
+
+function Select-OldVersionDirectories {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Items
+    )
+
+    $Items | Sort-Object LastWriteTime -Descending | Select-Object -Skip 1
 }
 
 function Test-IsSafeCleanupPath {
@@ -262,7 +310,10 @@ function Invoke-CleanupCandidate {
         }
 
         try {
-            if (Test-Path -LiteralPath $path -PathType Container) {
+            if ($Candidate.RemoveSelf) {
+                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            }
+            elseif (Test-Path -LiteralPath $path -PathType Container) {
                 Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue |
                     Remove-Item -Recurse -Force -ErrorAction Stop
             }
