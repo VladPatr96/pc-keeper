@@ -17,6 +17,8 @@ Run the tool (from the project root):
 .\program-update-all.cmd -Yes       # skip the final confirmation prompt
 .\program-update-all.cmd -Health    # check that installed programs start and respond
 .\program-update-all.cmd -Health -RegisterSchedule  # daily hidden check + toast on problems
+.\program-update-all.cmd -Maintain  # drive C: cleanup, offload to D, measure, toast below 15 GB (-DryRun to preview)
+.\program-update-all.cmd -Maintain -RegisterSchedule  # daily 13:00; register from the main checkout, not a worktree
 ```
 
 Run the test suite:
