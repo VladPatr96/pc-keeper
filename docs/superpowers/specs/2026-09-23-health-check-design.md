@@ -38,7 +38,7 @@
 ### 2. Проверки
 
 - **Gui:** `Test-Path` exe, `VersionInfo.FileVersion`, `Get-AuthenticodeSignature`. Итоговый статус: `Missing`, если exe нет, `Broken`, если подпись `HashMismatch`, иначе `OK`. Неподписанные exe — это нормально, не ошибка.
-- **Cli:** `<cmd> --version` с таймаутом 15 с. Результат: `OK` / `Failed` (код ≠ 0) / `TimedOut`.
+- **Cli:** `<cmd> --version` с таймаутом 15 с. Результат: `OK` (процесс запустился и завершился; код возврата только записывается, потому что многие CLI не знают `--version`) / `Failed` (не удалось запустить) / `TimedOut`. Запускаются только консольные exe (подсистема PE = 3) и скрипты `.cmd`/`.ps1`: шим GUI-программы не должен открывать окно.
 - **Agent:** команда PONG с таймаутом 180 с, в рабочем каталоге `%LOCALAPPDATA%\pc-keeper\health\probe-cwd`. `OK` — вывод содержит `PONG`, иначе `Failed` / `TimedOut`, плюс `DurationSeconds`.
 - **Окружение (чистые функции над собранными данными):**
   - `Find-DuplicateCommands` — одна команда на PATH из нескольких источников с разными версиями.
