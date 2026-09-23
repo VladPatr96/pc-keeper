@@ -35,6 +35,8 @@ Export-ModuleMember -Function @(
     'Get-DiskActionTargets',
     'Invoke-DiskAction',
     'Split-CleanupCandidatesByPrivilege',
+    'Select-DiskMeasureFolders',
+    'New-DailyCleanupRule',
     'New-HealthTarget',
     'ConvertFrom-UninstallExePath',
     'ConvertFrom-ShimListing',

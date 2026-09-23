@@ -15,7 +15,9 @@ function New-CleanupCandidate {
         # Remove the path itself (a stale clone, an old version), not just its contents.
         [bool] $RemoveSelf = $false,
         # A system change instead of a deletion (pagefile, DISM); see Invoke-DiskAction.
-        [string] $ActionId = ''
+        [string] $ActionId = '',
+        # Skip files in use instead of reporting them: %TEMP% always has some.
+        [bool] $BestEffort = $false
     )
 
     [pscustomobject]@{
@@ -28,6 +30,7 @@ function New-CleanupCandidate {
         RequiresClosedApp = $RequiresClosedApp
         RemoveSelf = $RemoveSelf
         ActionId = $ActionId
+        BestEffort = $BestEffort
         Selected = $false
     }
 }
@@ -325,6 +328,7 @@ function Get-DailyCleanupPlan {
         New-DailyCleanupRule -Name 'INetCache' -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\INetCache') -Mode 'Contents'
         New-DailyCleanupRule -Name 'Explorer thumbnails' -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Explorer') -Mode 'Files' -Pattern 'thumbcache_*.db'
         New-DailyCleanupRule -Name 'auto-claude-ui-updater' -Path (Join-Path $env:LOCALAPPDATA 'auto-claude-ui-updater') -Mode 'Contents'
+        New-DailyCleanupRule -Name 'npm cache left on C' -Path (Join-Path $env:LOCALAPPDATA 'npm-cache') -Mode 'Contents'
         foreach ($dir in Get-NpmGlobalScopeDirectories) {
             New-DailyCleanupRule -Name "npm staging $(Split-Path $dir -Leaf)" -Path $dir -Mode 'Stale' -Pattern '.*-*'
         }
@@ -352,12 +356,12 @@ function Get-DailyCleanupTargets {
 
         switch ($rule.Mode) {
             'Contents' {
-                New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($rule.Path) -SizeBytes (Get-PathSizeBytes -Path $rule.Path)
+                New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($rule.Path) -SizeBytes (Get-PathSizeBytes -Path $rule.Path) -BestEffort $true
             }
             'Files' {
                 $files = @(Get-ChildItem -LiteralPath $rule.Path -Filter $rule.Pattern -File -Force -ErrorAction SilentlyContinue)
                 if ($files.Count -gt 0) {
-                    New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($files.FullName) -SizeBytes ([double](($files | Measure-Object Length -Sum).Sum))
+                    New-CleanupCandidate -Category 'Daily' -Name $rule.Name -Paths @($files.FullName) -SizeBytes ([double](($files | Measure-Object Length -Sum).Sum)) -BestEffort $true
                 }
             }
             default {
@@ -403,16 +407,17 @@ function Invoke-CleanupCandidate {
             continue
         }
 
+        $onError = if ($Candidate.BestEffort) { 'SilentlyContinue' } else { 'Stop' }
         try {
             if ($Candidate.RemoveSelf) {
-                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction $onError
             }
             elseif (Test-Path -LiteralPath $path -PathType Container) {
                 Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue |
-                    Remove-Item -Recurse -Force -ErrorAction Stop
+                    Remove-Item -Recurse -Force -ErrorAction $onError
             }
             else {
-                Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $path -Force -ErrorAction $onError
             }
         }
         catch {

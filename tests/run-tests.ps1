@@ -1177,6 +1177,59 @@ It 'splits cleanup candidates by privilege' {
     Assert-Equal @($asAdmin.Blocked).Count 0 'nothing blocked for admin'
 }
 
+It 'skips locked files silently when a candidate is best effort' {
+    $dir = Join-Path $env:TEMP ("pck-besteffort-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    Set-Content -LiteralPath (Join-Path $dir 'free.txt') -Value 'x'
+    Set-Content -LiteralPath (Join-Path $dir 'locked.txt') -Value 'x'
+    $lock = [IO.File]::Open((Join-Path $dir 'locked.txt'), 'Open', 'Read', 'None')
+    try {
+        $strict = @(Invoke-CleanupCandidate -Candidate (New-CleanupCandidate -Category 'Temp' -Name 't' -Paths @($dir)) 3>$null)
+        Set-Content -LiteralPath (Join-Path $dir 'free.txt') -Value 'x'
+        $lenient = @(Invoke-CleanupCandidate -Candidate (New-CleanupCandidate -Category 'Temp' -Name 't' -Paths @($dir) -BestEffort $true))
+
+        Assert-Equal $strict.Count 1 'strict mode reports the locked file'
+        Assert-Equal $lenient.Count 0 'best effort reports nothing'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $dir 'free.txt')) $false 'unlocked file removed'
+        Assert-Equal (Test-Path -LiteralPath (Join-Path $dir 'locked.txt')) $true 'locked file stays'
+    }
+    finally {
+        $lock.Dispose()
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+It 'marks daily contents cleanup best effort but not stale clones' {
+    $dir = Join-Path $env:TEMP ("pck-daily-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force (Join-Path $dir 'marketplace-upgrade-old') | Out-Null
+    (Get-Item -LiteralPath (Join-Path $dir 'marketplace-upgrade-old')).LastWriteTime = (Get-Date).AddHours(-5)
+    try {
+        $plan = @(
+            New-DailyCleanupRule -Name 'contents' -Path $dir -Mode 'Contents'
+            New-DailyCleanupRule -Name 'clones' -Path $dir -Mode 'Stale' -Pattern 'marketplace-upgrade-*'
+        )
+
+        $targets = @(Get-DailyCleanupTargets -Plan $plan)
+
+        Assert-Equal ($targets | Where-Object Name -eq 'contents').BestEffort $true 'temp contents tolerate locks'
+        Assert-Equal ($targets | Where-Object { $_.Name -like 'clones:*' }).BestEffort $false 'a locked stale clone is reported'
+    }
+    finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+It 'measures a folder that contains an expanded root only through its children' {
+    $children = @('C:\Users\u\AppData', 'C:\Users\u\Documents', 'C:\Users\u\AppData2')
+    $expand = @('C:\Users\u', 'C:\Users\u\AppData\Local', 'C:\Users\u\AppData\Roaming')
+
+    $picked = @(Select-DiskMeasureFolders -Children $children -Expand $expand)
+
+    Assert-Equal (@($picked) -contains 'C:\Users\u\AppData') $false 'AppData is not counted twice'
+    Assert-Equal (@($picked) -contains 'C:\Users\u\Documents') $true 'ordinary child measured'
+    Assert-Equal (@($picked) -contains 'C:\Users\u\AppData2') $true 'shared prefix is not an ancestor'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

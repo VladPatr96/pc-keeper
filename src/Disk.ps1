@@ -378,6 +378,20 @@ function ConvertTo-DiskReportText {
     $builder.ToString()
 }
 
+function Select-DiskMeasureFolders {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Children,
+        [Parameter(Mandatory)] [string[]] $Expand
+    )
+
+    # A child that is (or contains) an expanded root is measured through that
+    # root's children instead, otherwise e.g. AppData would count twice.
+    $Children | Where-Object {
+        $child = $_
+        -not ($Expand | Where-Object { $_ -eq $child -or $_.StartsWith($child + '\', [StringComparison]::OrdinalIgnoreCase) })
+    }
+}
+
 $script:DiskSizeScannerSource = @'
 using System;
 using System.IO;
@@ -409,10 +423,10 @@ function Measure-DiskFolders {
     # Junctions are skipped: data already moved to D must not count against C.
     $folders = @()
     foreach ($root in @($Roots.Expand | Where-Object { $_ -and (Test-Path -LiteralPath $_) })) {
-        Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue |
+        $children = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue |
             Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-            Where-Object { $Roots.Expand -notcontains $_.FullName } |
-            ForEach-Object { $folders += $_.FullName }
+            Select-Object -ExpandProperty FullName)
+        $folders += @(Select-DiskMeasureFolders -Children $children -Expand $Roots.Expand)
     }
     $folders += @($Roots.Fixed | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
 
