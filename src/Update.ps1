@@ -1270,8 +1270,19 @@ function Invoke-ProgramUpdateAll {
         [switch] $Yes,
         [switch] $Health,
         [switch] $Quiet,
-        [switch] $RegisterSchedule
+        [switch] $RegisterSchedule,
+        [switch] $Maintain
     )
+
+    if ($Maintain) {
+        if ($RegisterSchedule) {
+            Register-DiskSchedule
+            return
+        }
+
+        Invoke-DiskMaintenance -Quiet:$Quiet -DryRun:$DryRun
+        return
+    }
 
     if ($Health) {
         if ($RegisterSchedule) {

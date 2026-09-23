@@ -337,3 +337,313 @@ function Format-DiskNotification {
 
     [pscustomobject]@{ Title = $title; Lines = @($lines | Select-Object -First 4) }
 }
+
+function ConvertTo-DiskReportText {
+    param(
+        [Parameter(Mandatory)] [double] $FreeBeforeBytes,
+        [Parameter(Mandatory)] [double] $FreeAfterBytes,
+        [double] $CleanedBytes = 0,
+        [object[]] $OffloadResults = @(),
+        [object[]] $DayGrowth = @(),
+        [object[]] $WeekGrowth = @(),
+        [object[]] $CleanupFailures = @()
+    )
+
+    $builder = [Text.StringBuilder]::new()
+    [void] $builder.AppendLine("PC Keeper Disk - $((Get-Date).ToString('yyyy-MM-dd HH:mm'))")
+    [void] $builder.AppendLine('')
+    [void] $builder.AppendLine("Free on C: $(ConvertTo-HumanSize -Bytes $FreeBeforeBytes) -> $(ConvertTo-HumanSize -Bytes $FreeAfterBytes)")
+    [void] $builder.AppendLine("Cleaned: $(ConvertTo-HumanSize -Bytes $CleanedBytes)")
+    foreach ($f in @($CleanupFailures)) {
+        [void] $builder.AppendLine("  [Failed] cleanup $($f.Path) $($f.Error)")
+    }
+
+    [void] $builder.AppendLine('')
+    [void] $builder.AppendLine('Offload to D:')
+    # Already-moved and missing targets are the normal state; list only what happened.
+    foreach ($r in @($OffloadResults | Where-Object { $_.Action -notin 'SkipLinked', 'SkipMissing' })) {
+        $size = if ($r.Bytes) { ConvertTo-HumanSize -Bytes $r.Bytes } else { '' }
+        $line = (@("  [$($r.Status)]", $r.Key, $r.Action, $size, $r.Detail, $r.MovedAside) | Where-Object { $_ }) -join ' '
+        [void] $builder.AppendLine($line)
+    }
+
+    foreach ($section in @(@{ Label = 'Grew since yesterday'; Items = $DayGrowth }, @{ Label = 'Grew in a week'; Items = $WeekGrowth })) {
+        [void] $builder.AppendLine('')
+        [void] $builder.AppendLine("$($section.Label):")
+        foreach ($g in @($section.Items | Select-Object -First 10)) {
+            [void] $builder.AppendLine("  $(Split-Path $g.Path -Leaf) +$(ConvertTo-HumanSize -Bytes $g.GrowthBytes)  ($($g.Path), now $(ConvertTo-HumanSize -Bytes $g.Bytes))")
+        }
+    }
+
+    $builder.ToString()
+}
+
+$script:DiskSizeScannerSource = @'
+using System;
+using System.IO;
+public static class PcKeeperDiskSize {
+    public static long Of(string root) {
+        var options = new EnumerationOptions {
+            RecurseSubdirectories = true, IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint };
+        long total = 0;
+        try {
+            foreach (var f in new DirectoryInfo(root).EnumerateFiles("*", options)) {
+                try { total += f.Length; } catch { }
+            }
+        } catch { }
+        return total;
+    }
+}
+'@
+
+function Measure-DiskFolders {
+    param(
+        [object] $Roots = (Get-DiskMeasureRoots)
+    )
+
+    if (-not ('PcKeeperDiskSize' -as [type])) {
+        Add-Type -TypeDefinition $script:DiskSizeScannerSource -Language CSharp
+    }
+
+    # Junctions are skipped: data already moved to D must not count against C.
+    $folders = @()
+    foreach ($root in @($Roots.Expand | Where-Object { $_ -and (Test-Path -LiteralPath $_) })) {
+        Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+            Where-Object { $Roots.Expand -notcontains $_.FullName } |
+            ForEach-Object { $folders += $_.FullName }
+    }
+    $folders += @($Roots.Fixed | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
+
+    foreach ($path in ($folders | Sort-Object -Unique)) {
+        [pscustomobject]@{ Path = $path; Bytes = [double] [PcKeeperDiskSize]::Of($path) }
+    }
+}
+
+function Get-DriveFreeBytes {
+    [double] (Get-PSDrive -Name C).Free
+}
+
+function Invoke-DiskMaintenance {
+    param(
+        [switch] $Quiet,
+        [switch] $DryRun
+    )
+
+    $dir = Get-DiskDataDirectory
+    $freeBefore = Get-DriveFreeBytes
+    $cleanupFailures = @()
+    $cleaned = 0
+    $offload = @()
+
+    try {
+        foreach ($candidate in @(Get-DailyCleanupTargets)) {
+            if (-not $Quiet) { Write-Host "cleanup: $($candidate.Name)" }
+            $failed = @(Invoke-CleanupCandidate -Candidate $candidate -DryRun:$DryRun)
+            $cleanupFailures += $failed
+            if ($failed.Count -eq 0) { $cleaned += $candidate.SizeBytes }
+        }
+        if (-not $DryRun) {
+            Clear-RecycleBin -DriveLetter C -Force -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        $cleanupFailures += [pscustomobject]@{ Path = 'cleanup step'; Error = $_.Exception.Message }
+    }
+
+    foreach ($target in @(Get-OffloadTargets)) {
+        if (-not $Quiet) { Write-Host "offload: $($target.Key)" }
+        $offload += Invoke-Offload -Target $target -DryRun:$DryRun
+    }
+
+    if (-not $Quiet) { Write-Host 'measuring folders on C...' }
+    $snapshot = New-DiskSnapshot -Date (Get-Date) -FreeBytes (Get-DriveFreeBytes) -Folders @(Measure-DiskFolders)
+    $history = @(Read-DiskSnapshots -Directory $dir)
+    $dayGrowth = @(Compare-DiskSnapshots -Current $snapshot -Previous (Select-DiskBaseline -Snapshots $history -DaysBack 1))
+    $weekGrowth = @(Compare-DiskSnapshots -Current $snapshot -Previous (Select-DiskBaseline -Snapshots $history -DaysBack 7) -MinGrowthBytes 500MB)
+
+    $report = ConvertTo-DiskReportText -FreeBeforeBytes $freeBefore -FreeAfterBytes $snapshot.FreeBytes -CleanedBytes $cleaned `
+        -OffloadResults $offload -DayGrowth $dayGrowth -WeekGrowth $weekGrowth -CleanupFailures $cleanupFailures
+    if (-not $DryRun) {
+        Save-DiskSnapshot -Directory $dir -Snapshot $snapshot
+        $report | Set-Content -LiteralPath (Join-Path $dir 'latest.txt') -Encoding utf8
+    }
+
+    $toast = Format-DiskNotification -FreeBytes $snapshot.FreeBytes -DayGrowth $dayGrowth -WeekGrowth $weekGrowth `
+        -OffloadResults $offload -CleanupFailures $cleanupFailures
+    if ($toast) {
+        Show-HealthToast -Title $toast.Title -Lines $toast.Lines
+    }
+
+    if (-not $Quiet) {
+        Write-Host ''
+        Write-Host $report
+    }
+}
+
+function New-DiskScheduleAction {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptPath
+    )
+
+    [pscustomobject]@{
+        Execute = 'C:\Windows\System32\conhost.exe'
+        Argument = "--headless pwsh -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Maintain -Quiet"
+    }
+}
+
+function Register-DiskSchedule {
+    param(
+        # Register from the main checkout: a worktree path disappears after merge.
+        [string] $ScriptPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'program-update-all.ps1')
+    )
+
+    $spec = New-DiskScheduleAction -ScriptPath $ScriptPath
+    $action = New-ScheduledTaskAction -Execute $spec.Execute -Argument $spec.Argument
+    $daily = New-ScheduledTaskTrigger -Daily -At '13:00'
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    Register-ScheduledTask -TaskName 'PcKeeperDiskMaintenance' -Action $action -Trigger $daily -Settings $settings -Description 'PC Keeper: daily cleanup, offload to D and measure of drive C' -Force | Out-Null
+    Write-Host "Registered scheduled task PcKeeperDiskMaintenance (daily 13:00). Report: $(Join-Path (Get-DiskDataDirectory) 'latest.txt')"
+
+    $old = 'DiskMaintenance-C-Offload'
+    if (Get-ScheduledTask -TaskName $old -ErrorAction SilentlyContinue) {
+        try {
+            Disable-ScheduledTask -TaskName $old -ErrorAction Stop | Out-Null
+            Write-Host "Disabled the old task $old (disk-tools)."
+        }
+        catch {
+            Write-Warning "Could not disable $old ($($_.Exception.Message)). Disable it from an elevated terminal: Disable-ScheduledTask -TaskName $old"
+        }
+    }
+}
+
+function Get-DiskActionCatalog {
+    # Manual actions from disk-tools (free-c-admin, cleanup-ab, move-caches):
+    # offered in the Cleanup menu, never run by the daily task.
+    @(
+        @{ Id = 'pagefile'; Name = 'Move the page file to D (1 GB stays on C, needs reboot)'; Path = 'C:\pagefile.sys'; Admin = $true }
+        @{ Id = 'winsxs'; Name = 'Clean the Windows component store (DISM StartComponentCleanup)'; Path = (Join-Path $env:WINDIR 'WinSxS'); Admin = $true }
+        @{ Id = 'iobit'; Name = 'Remove IObit Driver Booster leftovers and its scheduled tasks'; Path = (Join-Path $env:ProgramData 'IObit'); Admin = $true }
+        @{ Id = 'bluestacks'; Name = 'Remove BlueStacks leftovers'; Path = (Join-Path $env:ProgramFiles 'BlueStacks_nxt'); Admin = $true }
+        @{ Id = 'app-leftovers'; Name = 'Uninstall Auto-Claude and Aperant'; Path = (Join-Path $env:LOCALAPPDATA 'Programs'); Admin = $false }
+        @{ Id = 'paperclip'; Name = 'Remove Paperclip instances'; Path = (Join-Path $env:USERPROFILE '.paperclip\instances'); Admin = $false }
+        @{ Id = 'dev-caches'; Name = 'Keep npm and pip caches on D (D:\dev-cache)'; Path = 'D:\dev-cache'; Admin = $false }
+    ) | ForEach-Object {
+        [pscustomobject]@{ Id = $_.Id; Name = $_.Name; Path = $_.Path; RequiresAdmin = $_.Admin; RiskLevel = 'Review' }
+    }
+}
+
+function ConvertTo-DiskActionCandidate {
+    param(
+        [Parameter(Mandatory)] [object] $Action
+    )
+
+    New-CleanupCandidate -Category 'Disk action' -Name $Action.Name -Paths @($Action.Path) -RiskLevel $Action.RiskLevel -RequiresAdmin $Action.RequiresAdmin -ActionId $Action.Id
+}
+
+function Get-AppLeftoverUninstallers {
+    @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\auto-claude-ui\Uninstall Auto-Claude.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\aperant\Uninstall Aperant.exe')
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+}
+
+function Get-IObitTaskNames {
+    @('Driver Booster Scheduler', 'Driver Booster SkipUAC (user)', 'Driver Booster Update') |
+        Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+}
+
+function Test-DiskActionApplicable {
+    param(
+        [Parameter(Mandatory)] [string] $Id
+    )
+
+    switch ($Id) {
+        'pagefile' { -not (Get-CimInstance Win32_PageFileSetting -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'D:*' }) }
+        'winsxs' { $true }
+        'iobit' { (Test-Path -LiteralPath (Join-Path $env:ProgramData 'IObit')) -or @(Get-IObitTaskNames).Count -gt 0 }
+        'bluestacks' { (Test-Path -LiteralPath (Join-Path $env:ProgramFiles 'BlueStacks_nxt')) -or (Test-Path -LiteralPath (Join-Path $env:ProgramData 'BlueStacks_nxt')) }
+        'app-leftovers' { @(Get-AppLeftoverUninstallers).Count -gt 0 }
+        'paperclip' { Test-Path -LiteralPath (Join-Path $env:USERPROFILE '.paperclip\instances') }
+        'dev-caches' { (Test-Path -LiteralPath 'D:\') -and ($env:PIP_CACHE_DIR -notlike 'D:*' -or -not ((Invoke-NativeText -FilePath 'npm' -Arguments @('config', 'get', 'cache') -TimeoutSeconds 30).StdOut.Trim() -like 'D:*')) }
+        default { $false }
+    }
+}
+
+function Get-DiskActionTargets {
+    foreach ($action in Get-DiskActionCatalog) {
+        $applicable = try { Test-DiskActionApplicable -Id $action.Id } catch { $false }
+        if ($applicable) {
+            ConvertTo-DiskActionCandidate -Action $action
+        }
+    }
+}
+
+function Invoke-DiskAction {
+    param(
+        [Parameter(Mandatory)] [string] $Id,
+        [switch] $DryRun
+    )
+
+    if ($DryRun) {
+        Write-Host "DRY RUN disk action $Id"
+        return @()
+    }
+
+    try {
+        switch ($Id) {
+            'pagefile' {
+                # Create the page file on D first and shrink C only after that, so the
+                # system is never left without a page file.
+                $cs = Get-CimInstance Win32_ComputerSystem
+                if ($cs.AutomaticManagedPagefile) {
+                    Set-CimInstance -InputObject $cs -Property @{ AutomaticManagedPagefile = $false } -ErrorAction Stop
+                }
+                if (-not (Get-CimInstance Win32_PageFileSetting | Where-Object { $_.Name -like 'D:*' })) {
+                    New-CimInstance -ClassName Win32_PageFileSetting -Property @{ Name = 'D:\pagefile.sys'; InitialSize = [uint32] 0; MaximumSize = [uint32] 0 } -ErrorAction Stop | Out-Null
+                }
+                $onC = Get-CimInstance Win32_PageFileSetting | Where-Object { $_.Name -like 'C:*' }
+                if ($onC) {
+                    Set-CimInstance -InputObject $onC -Property @{ InitialSize = [uint32] 1024; MaximumSize = [uint32] 1024 } -ErrorAction Stop
+                }
+                Write-Host 'Page file moved to D; takes effect after a reboot.'
+            }
+            'winsxs' {
+                $result = Invoke-NativeText -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/StartComponentCleanup') -TimeoutSeconds 3600
+                if ($result.TimedOut -or $result.ExitCode -ne 0) {
+                    throw "DISM exit $($result.ExitCode): $($result.Text.Trim())"
+                }
+            }
+            'iobit' {
+                Remove-Item -LiteralPath (Join-Path $env:ProgramData 'IObit'), (Join-Path $env:APPDATA 'IObit') -Recurse -Force -ErrorAction SilentlyContinue
+                foreach ($task in Get-IObitTaskNames) {
+                    Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction Stop
+                }
+            }
+            'bluestacks' {
+                Remove-Item -LiteralPath (Join-Path $env:ProgramFiles 'BlueStacks_nxt'), (Join-Path $env:ProgramData 'BlueStacks_nxt') -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            'app-leftovers' {
+                foreach ($uninstaller in Get-AppLeftoverUninstallers) {
+                    Start-Process -FilePath $uninstaller -ArgumentList '/currentuser', '/S' -Wait
+                }
+            }
+            'paperclip' {
+                Remove-Item -LiteralPath (Join-Path $env:USERPROFILE '.paperclip\instances') -Recurse -Force -ErrorAction Stop
+            }
+            'dev-caches' {
+                New-Item -ItemType Directory -Force 'D:\dev-cache\npm-cache', 'D:\dev-cache\pip-cache' | Out-Null
+                Invoke-NativeText -FilePath 'npm' -Arguments @('config', 'set', 'cache', 'D:\dev-cache\npm-cache') -TimeoutSeconds 60 | Out-Null
+                [Environment]::SetEnvironmentVariable('PIP_CACHE_DIR', 'D:\dev-cache\pip-cache', 'User')
+                $env:PIP_CACHE_DIR = 'D:\dev-cache\pip-cache'
+            }
+            default { throw "unknown disk action: $Id" }
+        }
+        @()
+    }
+    catch {
+        Write-Warning "Disk action $Id failed: $($_.Exception.Message)"
+        @([pscustomobject]@{ Path = $Id; Error = $_.Exception.Message })
+    }
+}

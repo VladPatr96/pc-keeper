@@ -1113,6 +1113,70 @@ It 'builds a disk toast only for low space or failures' {
     Assert-Equal $broken.Lines[2] 'old copy moved aside: D:\c-offload\orca-stale-2026-09-23' 'moved-aside notice'
 }
 
+It 'builds a hidden scheduled action for the daily disk maintenance' {
+    $action = New-DiskScheduleAction -ScriptPath 'D:\pc-keeper\program-update-all.ps1'
+
+    Assert-Equal $action.Execute 'C:\Windows\System32\conhost.exe' 'runs through conhost'
+    Assert-Equal ($action.Argument -match '^--headless pwsh ') $true 'headless pwsh'
+    Assert-Equal ($action.Argument -match '-File "D:\\pc-keeper\\program-update-all\.ps1" -Maintain -Quiet$') $true 'maintain quiet mode'
+}
+
+It 'renders a disk maintenance report' {
+    $growth = @([pscustomobject]@{ Path = 'C:\Users\u\AppData\Roaming\orca'; Bytes = 6GB; GrowthBytes = 1GB })
+    $offload = @(
+        [pscustomobject]@{ Key = 'codex'; Status = 'Skipped'; Action = 'SkipLinked'; Bytes = 0; Detail = ''; MovedAside = '' }
+        [pscustomobject]@{ Key = 'grok'; Status = 'Failed'; Action = 'Offload'; Bytes = 0; Detail = 'source is in use'; MovedAside = '' }
+    )
+
+    $text = ConvertTo-DiskReportText -FreeBeforeBytes 9GB -FreeAfterBytes 10GB -CleanedBytes 512MB -OffloadResults $offload -DayGrowth $growth -WeekGrowth @() -CleanupFailures @()
+
+    Assert-Equal ($text -match 'Free on C: 9 GB -> 10 GB') $true 'free space before and after'
+    Assert-Equal ($text -match 'Cleaned: 512 MB') $true 'cleaned amount'
+    Assert-Equal ($text -match '\[Failed\] grok Offload source is in use') $true 'failed move listed'
+    Assert-Equal ($text -match 'orca \+1 GB') $true 'growth listed'
+    Assert-Equal ($text -match 'codex') $false 'already-moved targets are not noise'
+}
+
+It 'catalogs the manual disk actions ported from disk-tools' {
+    $catalog = @(Get-DiskActionCatalog)
+    $byId = @{}
+    foreach ($a in $catalog) { $byId[$a.Id] = $a }
+
+    foreach ($id in 'pagefile', 'winsxs', 'iobit', 'bluestacks', 'app-leftovers', 'paperclip', 'dev-caches') {
+        Assert-Equal $byId.ContainsKey($id) $true "action $id"
+    }
+    Assert-Equal $byId['pagefile'].RequiresAdmin $true 'pagefile needs admin'
+    Assert-Equal $byId['winsxs'].RequiresAdmin $true 'DISM needs admin'
+    Assert-Equal $byId['dev-caches'].RequiresAdmin $false 'cache relocation is per user'
+    Assert-Equal $byId['winsxs'].RiskLevel 'Review' 'system changes need review'
+}
+
+It 'turns a disk action into a cleanup candidate that dispatches by id' {
+    $action = @(Get-DiskActionCatalog) | Where-Object Id -eq 'winsxs'
+
+    $candidate = ConvertTo-DiskActionCandidate -Action $action
+
+    Assert-Equal $candidate.ActionId 'winsxs' 'action id kept'
+    Assert-Equal $candidate.RequiresAdmin $true 'privilege kept'
+    Assert-Equal $candidate.Category 'Disk action' 'category'
+    Assert-Equal (New-CleanupCandidate -Category 'Temp' -Name 'x' -Paths @('y')).ActionId '' 'plain candidates have no action'
+}
+
+It 'splits cleanup candidates by privilege' {
+    $items = @(
+        New-CleanupCandidate -Category 'Temp' -Name 'user' -Paths @('a')
+        New-CleanupCandidate -Category 'Temp' -Name 'windows' -Paths @('b') -RequiresAdmin $true
+    )
+
+    $asUser = Split-CleanupCandidatesByPrivilege -Candidates $items -IsAdmin $false
+    $asAdmin = Split-CleanupCandidatesByPrivilege -Candidates $items -IsAdmin $true
+
+    Assert-Equal @($asUser.Runnable).Count 1 'user can run one'
+    Assert-Equal @($asUser.Blocked)[0].Name 'windows' 'admin item blocked'
+    Assert-Equal @($asAdmin.Runnable).Count 2 'admin runs all'
+    Assert-Equal @($asAdmin.Blocked).Count 0 'nothing blocked for admin'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }

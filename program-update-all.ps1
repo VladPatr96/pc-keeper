@@ -9,7 +9,8 @@ param(
     [switch] $Yes,
     [switch] $Health,
     [switch] $Quiet,
-    [switch] $RegisterSchedule
+    [switch] $RegisterSchedule,
+    [switch] $Maintain
 )
 
 $ErrorActionPreference = 'Stop'

@@ -13,7 +13,9 @@ function New-CleanupCandidate {
         [bool] $RequiresAdmin = $false,
         [bool] $RequiresClosedApp = $false,
         # Remove the path itself (a stale clone, an old version), not just its contents.
-        [bool] $RemoveSelf = $false
+        [bool] $RemoveSelf = $false,
+        # A system change instead of a deletion (pagefile, DISM); see Invoke-DiskAction.
+        [string] $ActionId = ''
     )
 
     [pscustomobject]@{
@@ -25,6 +27,7 @@ function New-CleanupCandidate {
         RequiresAdmin = $RequiresAdmin
         RequiresClosedApp = $RequiresClosedApp
         RemoveSelf = $RemoveSelf
+        ActionId = $ActionId
         Selected = $false
     }
 }
@@ -283,7 +286,20 @@ function Get-CleanupTargets {
         Get-TempCleanupTargets
         Get-BrowserCacheTargets
         Get-LargeOldFiles
+        Get-DiskActionTargets
     )
+}
+
+function Split-CleanupCandidatesByPrivilege {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Candidates,
+        [Parameter(Mandatory)] [bool] $IsAdmin
+    )
+
+    [pscustomobject]@{
+        Runnable = @($Candidates | Where-Object { $IsAdmin -or -not $_.RequiresAdmin })
+        Blocked = @($Candidates | Where-Object { -not $IsAdmin -and $_.RequiresAdmin })
+    }
 }
 
 function New-DailyCleanupRule {
@@ -366,6 +382,10 @@ function Invoke-CleanupCandidate {
         [switch] $DryRun
     )
 
+    if ($Candidate.ActionId) {
+        return Invoke-DiskAction -Id $Candidate.ActionId -DryRun:$DryRun
+    }
+
     $failures = @()
     foreach ($path in @($Candidate.Paths)) {
         if (-not (Test-IsSafeCleanupPath -Path $path)) {
@@ -425,7 +445,18 @@ function Invoke-CleanupFlow {
     )
 
     Clear-Host
-    $targets = @(Show-Spinner -Message 'Scanning cleanup targets...' -ScriptBlock { Get-CleanupTargets })
+    $all = @(Show-Spinner -Message 'Scanning cleanup targets...' -ScriptBlock { Get-CleanupTargets })
+    $split = Split-CleanupCandidatesByPrivilege -Candidates $all -IsAdmin (Test-IsAdministrator)
+    if ($split.Blocked.Count -gt 0) {
+        Write-Host 'Needs an elevated terminal (re-run PC Keeper as administrator):'
+        foreach ($item in $split.Blocked) {
+            Write-Host "  $(Format-CleanupCandidate -Item $item)"
+        }
+        Write-Host ''
+        [void] (Read-Host 'Press Enter to continue')
+    }
+
+    $targets = @($split.Runnable)
     if ($targets.Count -eq 0) {
         Write-Host 'Nothing to clean.'
         return
