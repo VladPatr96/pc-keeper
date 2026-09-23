@@ -9,8 +9,14 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'Cleanup.ps1')
 . (Join-Path $PSScriptRoot 'Security.ps1')
 . (Join-Path $PSScriptRoot 'Health.ps1')
+. (Join-Path $PSScriptRoot 'Disk.ps1')
 
 Export-ModuleMember -Function @(
+    'Get-OffloadTargets',
+    'Resolve-OffloadAction',
+    'Get-StaleOffloadPath',
+    'Test-OffloadCopyMatches',
+    'Invoke-Offload',
     'New-HealthTarget',
     'ConvertFrom-UninstallExePath',
     'ConvertFrom-ShimListing',

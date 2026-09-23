@@ -994,6 +994,38 @@ It 'plans the daily disk cleanup with a mode per location' {
     }
 }
 
+It 'lists offload targets under the destination, without orca' {
+    $targets = @(Get-OffloadTargets -Destination 'D:\c-offload')
+    $codex = $targets | Where-Object Key -eq 'codex'
+
+    Assert-Equal (@($targets.Key) -contains 'orca') $false 'orca is cleaned, not moved'
+    Assert-Equal $codex.Source (Join-Path $env:USERPROFILE '.codex') 'codex source'
+    Assert-Equal $codex.Target 'D:\c-offload\codex' 'codex target'
+    Assert-Equal (@($codex.Procs) -contains 'codex') $true 'codex must be closed'
+    Assert-Equal @($targets.Key | Sort-Object -Unique).Count $targets.Count 'keys are unique'
+}
+
+It 'resolves what to do with an offload target' {
+    Assert-Equal (Resolve-OffloadAction -SourceExists $false -SourceIsLink $false -TargetExists $false) 'SkipMissing' 'no source'
+    Assert-Equal (Resolve-OffloadAction -SourceExists $true -SourceIsLink $true -TargetExists $true) 'SkipLinked' 'already moved'
+    Assert-Equal (Resolve-OffloadAction -SourceExists $true -SourceIsLink $false -TargetExists $false -BusyProcesses @('Code')) 'SkipBusy' 'app is running'
+    Assert-Equal (Resolve-OffloadAction -SourceExists $true -SourceIsLink $false -TargetExists $false) 'Offload' 'plain move'
+    Assert-Equal (Resolve-OffloadAction -SourceExists $true -SourceIsLink $false -TargetExists $true) 'MoveStaleThenOffload' 'leftover copy on D is moved aside first'
+}
+
+It 'names a moved-aside offload copy by date and avoids collisions' {
+    $date = [datetime] '2026-09-23'
+
+    Assert-Equal (Get-StaleOffloadPath -Target 'D:\c-offload\orca' -Date $date) 'D:\c-offload\orca-stale-2026-09-23' 'dated name'
+    Assert-Equal (Get-StaleOffloadPath -Target 'D:\c-offload\orca' -Date $date -ExistingPaths @('D:\c-offload\orca-stale-2026-09-23')) 'D:\c-offload\orca-stale-2026-09-23-2' 'second one the same day'
+}
+
+It 'accepts an offload copy only when file count and size match' {
+    Assert-Equal (Test-OffloadCopyMatches -SourceCount 10 -SourceBytes 5000 -TargetCount 10 -TargetBytes 5000) $true 'identical'
+    Assert-Equal (Test-OffloadCopyMatches -SourceCount 10 -SourceBytes 5000 -TargetCount 9 -TargetBytes 5000) $false 'missing file'
+    Assert-Equal (Test-OffloadCopyMatches -SourceCount 10 -SourceBytes 5000 -TargetCount 10 -TargetBytes 4999) $false 'short file'
+}
+
 if ($script:Failed -gt 0) {
     throw "$script:Failed test(s) failed, $script:Passed passed."
 }
