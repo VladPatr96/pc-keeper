@@ -14,6 +14,7 @@ Export-ModuleMember -Function @(
     'New-HealthTarget',
     'ConvertFrom-UninstallExePath',
     'ConvertFrom-ShimListing',
+    'ConvertFrom-ShimgenNoop',
     'Get-HealthAgentCatalog',
     'Get-PeSubsystem',
     'New-HealthResult',

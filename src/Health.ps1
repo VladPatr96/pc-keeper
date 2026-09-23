@@ -68,6 +68,18 @@ function ConvertFrom-ShimListing {
         Sort-Object -Unique
 }
 
+function ConvertFrom-ShimgenNoop {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
+    )
+
+    $target = if ($Text -match '(?m)^\s*path to executable:\s*(.+?)\s*$') { $Matches[1] } else { '' }
+    [pscustomobject]@{
+        Target = $target
+        IsGui = $Text -match '(?m)^\s*is gui\?\s*True\s*$'
+    }
+}
+
 function Get-HealthAgentCatalog {
     $prompt = $script:HealthPongPrompt
     @(
@@ -145,7 +157,8 @@ function Resolve-HealthProbeResult {
     $duration = [double] $NativeResult.DurationSeconds
     if ($NativeResult.TimedOut -and $Target.Kind -eq 'Agent' -and $NativeResult.StdOut -match '\bPONG\b') {
         # e.g. grok -p prints the answer but never exits on its own.
-        return New-HealthResult -Target $Target -Status 'OK' -DurationSeconds $duration -Detail "answered, but did not exit (killed after $($Target.TimeoutSeconds) s)"
+        # Duration 0: the timeout is not a real answer time and must not skew the median.
+        return New-HealthResult -Target $Target -Status 'OK' -Detail "answered, but did not exit (killed after $($Target.TimeoutSeconds) s)"
     }
 
     if ($NativeResult.TimedOut) {
@@ -390,6 +403,12 @@ function Get-HealthTargets {
                 Select-Object -First 1
             if (-not $file) { continue }
             if ($file -match '\.exe$' -and (Get-PeSubsystem -Path $file) -ne 3) { continue }
+            if ($dir.Source -eq 'choco' -and $file -match '\.exe$') {
+                # Shimgen shims are always console exes; the program they start may be a GUI
+                # wizard that would open a window. --shimgen-noop reports the target without running it.
+                $shim = ConvertFrom-ShimgenNoop -Text (Invoke-NativeText -FilePath $file -Arguments @('--shimgen-noop') -TimeoutSeconds 15).Text
+                if ($shim.Target -and ($shim.IsGui -or (Get-PeSubsystem -Path $shim.Target) -ne 3)) { continue }
+            }
             $targets += New-HealthTarget -Kind 'Cli' -Name $name -Source $dir.Source -Command $file -ProbeArguments @('--version')
         }
     }

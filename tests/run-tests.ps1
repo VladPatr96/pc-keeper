@@ -722,6 +722,25 @@ It 'lists commands from a shim directory without internal shims' {
     Assert-Equal ($names -join ',') 'choco,codex,rg' 'unique command names'
 }
 
+It 'reads a chocolatey shim target and whether it is a GUI app' {
+    $gui = @'
+[shim]: Set up Shim to run with the following parameters:
+  path to executable: C:\ProgramData\chocolatey\lib\unzip\tools\SFXWiz32.exe
+  working directory: D:\x
+  is gui? True
+  wait for exit? False
+'@
+    $console = $gui -replace 'unzip\\tools\\SFXWiz32\.exe', 'ripgrep\tools\rg.exe' -replace 'is gui\? True', 'is gui? False'
+
+    $g = ConvertFrom-ShimgenNoop -Text $gui
+    $c = ConvertFrom-ShimgenNoop -Text $console
+
+    Assert-Equal $g.Target 'C:\ProgramData\chocolatey\lib\unzip\tools\SFXWiz32.exe' 'gui shim target'
+    Assert-Equal $g.IsGui $true 'gui shim flagged'
+    Assert-Equal $c.IsGui $false 'console shim not flagged'
+    Assert-Equal (ConvertFrom-ShimgenNoop -Text 'not a shim').Target '' 'non-shim output'
+}
+
 It 'catalogs AI agents with a PONG prompt and long timeout' {
     $agents = @(Get-HealthAgentCatalog)
     $codex = $agents | Where-Object Name -eq 'codex'
@@ -764,6 +783,7 @@ It 'treats an agent that answered but never exited as OK with a note' {
 
     Assert-Equal $resolved.Status 'OK' 'answer counts'
     Assert-Equal ($resolved.Detail -match 'did not exit') $true 'hang is noted'
+    Assert-Equal $resolved.DurationSeconds 0 'timeout duration kept out of the history median'
 }
 
 It 'picks the error line over noise for a failed agent' {
