@@ -68,6 +68,20 @@ update-all -Doctor
 
 `Installed=True` означает, что команда найдена. `Starts=True` означает, что она реально запускается из текущего терминала.
 
+## Проверка программ
+
+```powershell
+update-all -Health                    # проверить, что установленные программы запускаются и отвечают
+update-all -Health -RegisterSchedule  # ежедневная скрытая проверка + уведомление при проблемах
+```
+
+- **CLI** из Volta, npm, Chocolatey и Scoop: `--version` с таймаутом 30 с. Запускаются только консольные exe и `.cmd`.
+- **GUI-программы** из uninstall-реестра: exe на месте, версия файла, подпись не повреждена. Сами программы не запускаются.
+- **ИИ-агенты** (codex, claude, opencode, agy, gemini, grok): настоящий запрос «ответь PONG», таймаут 180 с. Статус `Slow` — время выше 2× медианы последних запусков и больше 30 с.
+- **Окружение:** одна команда установлена несколько раз с разными версиями; у codex — `.sandbox\setup_error.json` и раздутый `.tmp\marketplaces\.staging`.
+
+Задача `PcKeeperHealthCheck` запускается через 5 минут после входа и ежедневно в 12:00, окно не открывает (`conhost --headless`). История лежит в `%LOCALAPPDATA%\pc-keeper\health\` (30 дней), отчёт — в `latest.txt`. Уведомление Windows приходит только при проблемах.
+
 ## GitHub/Electron Apps
 
 Для приложений, установленных вручную с GitHub, скрипт поддерживает Electron updater metadata:

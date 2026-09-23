@@ -12,7 +12,7 @@ function New-HealthTarget {
         [string] $Command = '',
         [string] $Path = '',
         [string[]] $ProbeArguments = @(),
-        [int] $TimeoutSeconds = 15
+        [int] $TimeoutSeconds = 30
     )
 
     [pscustomobject]@{
@@ -143,6 +143,11 @@ function Resolve-HealthProbeResult {
     }
 
     $duration = [double] $NativeResult.DurationSeconds
+    if ($NativeResult.TimedOut -and $Target.Kind -eq 'Agent' -and $NativeResult.StdOut -match '\bPONG\b') {
+        # e.g. grok -p prints the answer but never exits on its own.
+        return New-HealthResult -Target $Target -Status 'OK' -DurationSeconds $duration -Detail "answered, but did not exit (killed after $($Target.TimeoutSeconds) s)"
+    }
+
     if ($NativeResult.TimedOut) {
         return New-HealthResult -Target $Target -Status 'TimedOut' -DurationSeconds $duration -Detail "no answer within $($Target.TimeoutSeconds) s"
     }
@@ -152,7 +157,10 @@ function Resolve-HealthProbeResult {
             return New-HealthResult -Target $Target -Status 'OK' -DurationSeconds $duration
         }
 
-        $detail = (($NativeResult.StdErr + ' ' + $NativeResult.StdOut) -replace '\s+', ' ').Trim()
+        # Agents print warnings and hook noise first; the real cause is the first error line.
+        $lines = @(($NativeResult.StdErr + "`n" + $NativeResult.StdOut) -split "\r?\n" | Where-Object { $_.Trim() })
+        $errorLine = $lines | Where-Object { $_ -match 'error' -and $_ -notmatch '^\s+at ' } | Select-Object -First 1
+        $detail = if ($errorLine) { $errorLine.Trim() } else { (($lines | Select-Object -Last 3) -join ' ').Trim() }
         if ($detail.Length -gt 200) { $detail = $detail.Substring(0, 200) }
         return New-HealthResult -Target $Target -Status 'Failed' -DurationSeconds $duration -Detail $detail
     }
@@ -496,4 +504,47 @@ function Invoke-HealthCheck {
     }
 
     $results
+}
+
+function New-HealthScheduleAction {
+    param(
+        [Parameter(Mandatory)] [string] $ScriptPath
+    )
+
+    [pscustomobject]@{
+        Execute = 'C:\Windows\System32\conhost.exe'
+        Argument = "--headless pwsh -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Health -Quiet"
+    }
+}
+
+function Register-HealthSchedule {
+    $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'program-update-all.ps1'
+    $spec = New-HealthScheduleAction -ScriptPath $scriptPath
+    $action = New-ScheduledTaskAction -Execute $spec.Execute -Argument $spec.Argument
+    $logon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $logon.Delay = 'PT5M'
+    $daily = New-ScheduledTaskTrigger -Daily -At '12:00'
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    Register-ScheduledTask -TaskName 'PcKeeperHealthCheck' -Action $action -Trigger @($logon, $daily) -Settings $settings -Description 'PC Keeper: daily health check of installed programs' -Force | Out-Null
+    Write-Host "Registered scheduled task PcKeeperHealthCheck (at logon +5 min and daily 12:00). Report: $(Join-Path (Get-HealthDataDirectory) 'latest.txt')"
+}
+
+function Show-HealthReport {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Results
+    )
+
+    Write-Header -Title 'Program Health' -Subtitle "$($Results.Count) checks"
+    foreach ($r in ($Results | Sort-Object { -not (Test-IsHealthProblem -Result $_) }, Kind, Name)) {
+        $isProblem = Test-IsHealthProblem -Result $r
+        $status = if ($isProblem) { if ($r.Status -in 'Warn', 'Slow') { 'Warn' } else { 'Bad' } } elseif ($r.Status -eq 'OK') { 'Ok' } else { 'Info' }
+        if (-not $isProblem -and $r.Kind -eq 'Gui') { continue }
+        $duration = if ($r.DurationSeconds) { "$($r.DurationSeconds)s" } else { '' }
+        $value = (@($r.Status, $r.Version, $duration, $r.Detail) | Where-Object { $_ }) -join '  '
+        Write-StatusLine -Status $status -Label "$($r.Kind) $($r.Name) [$($r.Source)]" -Value $value
+    }
+
+    $okGui = @($Results | Where-Object { $_.Kind -eq 'Gui' -and $_.Status -eq 'OK' }).Count
+    Write-StatusLine -Status 'Ok' -Label 'GUI programs OK' -Value "$okGui"
+    Write-Host "Full report: $(Join-Path (Get-HealthDataDirectory) 'latest.txt')"
 }

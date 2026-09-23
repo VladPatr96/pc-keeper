@@ -1267,8 +1267,24 @@ function Invoke-ProgramUpdateAll {
         [switch] $Inventory,
         [switch] $List,
         [switch] $SkipDrivers,
-        [switch] $Yes
+        [switch] $Yes,
+        [switch] $Health,
+        [switch] $Quiet,
+        [switch] $RegisterSchedule
     )
+
+    if ($Health) {
+        if ($RegisterSchedule) {
+            Register-HealthSchedule
+            return
+        }
+
+        $results = @(Invoke-HealthCheck -Quiet:$Quiet)
+        if (-not $Quiet) {
+            Show-HealthReport -Results $results
+        }
+        return
+    }
 
     if ($Doctor) {
         Get-UpdateProviderDiagnostics |

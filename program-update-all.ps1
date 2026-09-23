@@ -6,7 +6,10 @@ param(
     [switch] $Inventory,
     [switch] $List,
     [switch] $SkipDrivers,
-    [switch] $Yes
+    [switch] $Yes,
+    [switch] $Health,
+    [switch] $Quiet,
+    [switch] $RegisterSchedule
 )
 
 $ErrorActionPreference = 'Stop'

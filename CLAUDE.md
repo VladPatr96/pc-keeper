@@ -15,6 +15,8 @@ Run the tool (from the project root):
 .\program-update-all.cmd -All       # preselect every candidate
 .\program-update-all.cmd -SkipDrivers
 .\program-update-all.cmd -Yes       # skip the final confirmation prompt
+.\program-update-all.cmd -Health    # check that installed programs start and respond
+.\program-update-all.cmd -Health -RegisterSchedule  # daily hidden check + toast on problems
 ```
 
 Run the test suite:

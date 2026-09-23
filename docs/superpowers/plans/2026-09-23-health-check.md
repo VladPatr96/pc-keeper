@@ -15,7 +15,7 @@
 - `Set-StrictMode -Version Latest` is on for the module; access optional properties via `PSObject.Properties.Name -contains`.
 - Tests first: every new pure function gets a failing `It` block in `tests/run-tests.ps1` before its implementation. Run the full suite: `pwsh -NoProfile -ExecutionPolicy Bypass -File .\tests\run-tests.ps1` (must end with `N test(s) passed.`).
 - All external calls go through `Invoke-NativeText`.
-- Agent PONG prompt: `Reply with the single word PONG`. Agent timeout 180 s, CLI timeout 15 s.
+- Agent PONG prompt: `Reply with the single word PONG`. Agent timeout 180 s, CLI timeout 30 s.
 - Slow = `DurationSeconds > 2 × median(last 7 OK runs)` AND `> 30`; needs ≥ 3 OK runs of history.
 - Data dir: `%LOCALAPPDATA%\pc-keeper\health`; history `<yyyy-MM-dd>.json`, kept 30 days; `latest.txt`.
 - Scheduled task name `PcKeeperHealthCheck`; action runs through `C:\Windows\System32\conhost.exe --headless`.

@@ -187,6 +187,7 @@ function Get-MainMenuItems {
         [pscustomobject]@{ Id = 'audit'; Title = 'PC Audit'; Subtitle = 'Read-only system health report' }
         [pscustomobject]@{ Id = 'cleanup'; Title = 'Cleanup'; Subtitle = 'Find and remove junk to free space' }
         [pscustomobject]@{ Id = 'security'; Title = 'Security'; Subtitle = 'Settings hygiene and account audit' }
+        [pscustomobject]@{ Id = 'health'; Title = 'Program Health'; Subtitle = 'Check that installed programs start and respond' }
     )
 }
 
@@ -267,6 +268,11 @@ function Invoke-PcKeeper {
             }
             'security' {
                 Invoke-SecurityFlow
+            }
+            'health' {
+                Clear-Host
+                $results = @(Invoke-HealthCheck)
+                Show-HealthReport -Results $results
             }
             default {
                 return

@@ -495,14 +495,23 @@ It 'wraps the menu index when navigating past either end' {
     Assert-Equal (Get-NextMenuIndex -Current 0 -Delta -1 -Count 1) 0 'single item stays put'
 }
 
-It 'exposes the four PC Keeper pillars in the main menu' {
+It 'exposes the PC Keeper pillars in the main menu' {
     $items = @(Get-MainMenuItems)
 
-    Assert-Equal $items.Count 4 'main menu pillar count'
+    Assert-Equal $items.Count 5 'main menu pillar count'
     Assert-Equal $items[0].Id 'updates' 'first pillar is updates'
     Assert-Equal $items[1].Id 'audit' 'second pillar is audit'
     Assert-Equal $items[2].Id 'cleanup' 'third pillar is cleanup'
     Assert-Equal $items[3].Id 'security' 'fourth pillar is security'
+    Assert-Equal $items[4].Id 'health' 'fifth pillar is program health'
+}
+
+It 'builds a hidden scheduled task action for the health check' {
+    $action = New-HealthScheduleAction -ScriptPath 'D:\pc-keeper\program-update-all.ps1'
+
+    Assert-Equal $action.Execute 'C:\Windows\System32\conhost.exe' 'runs through conhost'
+    Assert-Equal ($action.Argument.StartsWith('--headless pwsh ')) $true 'headless pwsh'
+    Assert-Equal ($action.Argument -match '-File "D:\\pc-keeper\\program-update-all\.ps1" -Health -Quiet$') $true 'health quiet mode'
 }
 
 It 'converts byte counts into human readable sizes' {
@@ -696,7 +705,7 @@ It 'builds a health target with a stable key' {
     $target = New-HealthTarget -Kind 'Cli' -Name 'rg' -Source 'choco' -Command 'C:\choco\bin\rg.exe' -ProbeArguments @('--version')
 
     Assert-Equal $target.Key 'Cli/choco/rg' 'target key'
-    Assert-Equal $target.TimeoutSeconds 15 'default timeout'
+    Assert-Equal $target.TimeoutSeconds 30 'default timeout'
     Assert-Equal $target.ProbeArguments[0] '--version' 'probe arguments'
 }
 
@@ -745,6 +754,26 @@ It 'resolves CLI and agent probe results into health statuses' {
     Assert-Equal ((Resolve-HealthProbeResult -Target $agent -NativeResult $silent).Detail -match 'auth error') $true 'failure detail from stderr'
     Assert-Equal (Resolve-HealthProbeResult -Target $agent -NativeResult $hung).Status 'TimedOut' 'agent timed out'
     Assert-Equal (Resolve-HealthProbeResult -Target $cli -ErrorMessage 'file not found').Status 'Failed' 'launch error'
+}
+
+It 'treats an agent that answered but never exited as OK with a note' {
+    $agent = New-HealthTarget -Kind 'Agent' -Name 'grok' -Source 'agent' -TimeoutSeconds 180
+    $result = [pscustomobject]@{ ExitCode = $null; StdOut = "PONG`n"; StdErr = ''; TimedOut = $true; DurationSeconds = 180.3 }
+
+    $resolved = Resolve-HealthProbeResult -Target $agent -NativeResult $result
+
+    Assert-Equal $resolved.Status 'OK' 'answer counts'
+    Assert-Equal ($resolved.Detail -match 'did not exit') $true 'hang is noted'
+}
+
+It 'picks the error line over noise for a failed agent' {
+    $agent = New-HealthTarget -Kind 'Agent' -Name 'gemini' -Source 'agent'
+    $stderr = "Warning: 256-color support not detected.`nsome hook output`nAn unexpected critical error occurred:IneligibleTierError: This client is no longer supported`n    at throwIneligible (file:///x.js:1:1)"
+    $result = [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = $stderr; TimedOut = $false; DurationSeconds = 29 }
+
+    $detail = (Resolve-HealthProbeResult -Target $agent -NativeResult $result).Detail
+
+    Assert-Equal $detail.StartsWith('An unexpected critical error occurred:IneligibleTierError') $true 'error line chosen'
 }
 
 It 'parses a version from CLI output' {
