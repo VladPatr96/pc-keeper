@@ -848,6 +848,43 @@ It 'reports codex sandbox setup errors and bloated marketplace staging' {
     }
 }
 
+It 'extracts the file paths codex loads from config.toml' {
+    $text = @'
+model = "gpt-6.1-sol"
+openai_base_url = "http://127.0.0.1:4202/v1"
+model_catalog_json = "C:\\Users\\u\\.codex\\codex-router\\merged-models.json"
+model_instructions_file = 'C:\Users\u\instructions.md'
+notify = [ "C:\\x\\notify.exe", "turn-ended" ]
+[projects.'d:\projects\gone']
+trust_level = "trusted"
+'@
+    $paths = @(Get-CodexConfigFilePaths -Text $text)
+    Assert-Equal $paths.Count 2 'only *_file and *_json keys'
+    Assert-Equal $paths[0].Key 'model_catalog_json' 'json key'
+    Assert-Equal $paths[0].Path 'C:\Users\u\.codex\codex-router\merged-models.json' 'basic string unescaped'
+    Assert-Equal $paths[1].Path 'C:\Users\u\instructions.md' 'literal string kept as is'
+}
+
+It 'reports config.toml pointing at a missing file' {
+    $codexHome = Join-Path ([IO.Path]::GetTempPath()) "pck-codex-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force $codexHome | Out-Null
+    try {
+        $present = Join-Path $codexHome 'models.json'
+        Set-Content $present '{}'
+        Set-Content (Join-Path $codexHome 'config.toml') "model_catalog_json = '$present'"
+        Assert-Equal @(Get-CodexStateFindings -CodexHome $codexHome).Count 0 'existing file'
+
+        Set-Content (Join-Path $codexHome 'config.toml') "model_catalog_json = '$(Join-Path $codexHome 'gone.json')'"
+        $findings = @(Get-CodexStateFindings -CodexHome $codexHome)
+        Assert-Equal $findings.Count 1 'missing file'
+        Assert-Equal $findings[0].Name 'codex config model_catalog_json' 'names the key'
+        Assert-Equal ($findings[0].Detail -match 'gone\.json') $true 'detail has the path'
+    }
+    finally {
+        Remove-Item -Recurse -Force $codexHome
+    }
+}
+
 It 'marks a probe slow against its recent median' {
     $history = @(20, 25, 30, 28, 26) | ForEach-Object { [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = $_ } }
     $slow = [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = 100; Detail = '' }

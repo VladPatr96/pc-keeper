@@ -50,6 +50,7 @@ Export-ModuleMember -Function @(
     'Resolve-HealthProbeResult',
     'Resolve-GuiHealthResult',
     'Find-DuplicateCommands',
+    'Get-CodexConfigFilePaths',
     'Get-CodexStateFindings',
     'Get-HealthVerdict',
     'Save-HealthResults',
