@@ -1005,6 +1005,40 @@ It 'lists offload targets under the destination, without orca' {
     Assert-Equal @($targets.Key | Sort-Object -Unique).Count $targets.Count 'keys are unique'
 }
 
+It 'declares app-server-control as a private folder of codex' {
+    $targets = @(Get-OffloadTargets -Destination 'D:\c-offload')
+    Assert-Equal (@(($targets | Where-Object Key -eq 'codex').PrivateDirs) -join ',') 'app-server-control' 'codex private dirs'
+    Assert-Equal @(($targets | Where-Object Key -eq 'chrome').PrivateDirs).Count 0 'others have none'
+}
+
+It 'copies folder permissions when offloading' {
+    $copyArgs = @(Get-OffloadCopyArguments -Source 'C:\a' -Target 'D:\c-offload\a')
+    Assert-Equal $copyArgs[0] 'C:\a' 'source first'
+    Assert-Equal $copyArgs[1] 'D:\c-offload\a' 'target second'
+    Assert-Equal ($copyArgs -contains '/COPY:DATS') $true 'file security copied'
+    Assert-Equal ($copyArgs -contains '/DCOPY:DAT') $true 'folder timestamps copied'
+    Assert-Equal ($copyArgs -contains '/XJ') $true 'junctions still skipped'
+}
+
+It 'checks the profile-like ACL of an offload root' {
+    $user = 'S-1-5-21-1-2-3-1001'
+    $own = [pscustomobject]@{ Sid = $user; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    $leak = [pscustomobject]@{ Sid = 'S-1-5-11'; Type = 'Allow'; Rights = 'Modify, Synchronize'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $true }
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own)) $true 'protected with own full control'
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $false -Rules @($own, $leak)) $false 'inherits from D:\'
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($leak)) $false 'no own entry'
+}
+
+It 'checks the user-only ACL codex requires for a private folder' {
+    $user = 'S-1-5-21-1-2-3-1001'
+    $own = [pscustomobject]@{ Sid = $user; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    $system = [pscustomobject]@{ Sid = 'S-1-5-18'; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own)) $true 'exactly one own entry'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own, $system)) $false 'second entry'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid 'S-1-5-32-544' -IsProtected $true -Rules @($own)) $false 'foreign owner'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $false -Rules @($own)) $false 'not protected'
+}
+
 It 'resolves what to do with an offload target' {
     Assert-Equal (Resolve-OffloadAction -SourceExists $false -SourceIsLink $false -TargetExists $false) 'SkipMissing' 'no source'
     Assert-Equal (Resolve-OffloadAction -SourceExists $true -SourceIsLink $true -TargetExists $true) 'SkipLinked' 'already moved'
