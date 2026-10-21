@@ -11,7 +11,7 @@ function Get-OffloadTargets {
     # orca is not here: its growth was a leak of Codex marketplace clones, which
     # the daily cleanup removes (Get-DailyCleanupPlan).
     @(
-        @{ Key = 'claude-vm'; Source = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\vm_bundles'; Procs = @('Claude', 'claude') }
+        @{ Key = 'claude-vm'; Source = Join-Path $env:LOCALAPPDATA 'Claude-Data\claude_pzs8sxrjxfjjc\vm_bundles'; Procs = @('Claude', 'claude') }
         @{ Key = 'codex'; Source = Join-Path $env:USERPROFILE '.codex'; Procs = @('codex'); PrivateDirs = @('app-server-control') }
         @{ Key = 'playwright'; Source = Join-Path $env:LOCALAPPDATA 'ms-playwright'; Procs = @() }
         @{ Key = 'perplexity'; Source = Join-Path $env:LOCALAPPDATA 'Perplexity'; Procs = @('Comet', 'Perplexity') }

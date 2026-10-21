@@ -1042,6 +1042,11 @@ It 'lists offload targets under the destination, without orca' {
     Assert-Equal @($targets.Key | Sort-Object -Unique).Count $targets.Count 'keys are unique'
 }
 
+It 'offloads the Claude VM from the Claude-Data folder' {
+    $vm = @(Get-OffloadTargets -Destination 'D:\c-offload') | Where-Object Key -eq 'claude-vm'
+    Assert-Equal $vm.Source (Join-Path $env:LOCALAPPDATA 'Claude-Data\claude_pzs8sxrjxfjjc\vm_bundles') 'claude-vm source'
+}
+
 It 'declares app-server-control as a private folder of codex' {
     $targets = @(Get-OffloadTargets -Destination 'D:\c-offload')
     Assert-Equal (@(($targets | Where-Object Key -eq 'codex').PrivateDirs) -join ',') 'app-server-control' 'codex private dirs'
