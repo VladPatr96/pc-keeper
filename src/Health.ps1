@@ -80,6 +80,20 @@ function ConvertFrom-ShimgenNoop {
     }
 }
 
+function Test-IsConsoleHealthTarget {
+    param(
+        [int] $Subsystem,
+        [bool] $IsShim = $false,
+        [AllowNull()] [object] $Shim = $null,
+        [int] $TargetSubsystem = 0
+    )
+
+    if ($Subsystem -ne 3) { return $false }
+    if (-not $IsShim) { return $true }
+    if ($null -eq $Shim -or [string]::IsNullOrWhiteSpace($Shim.Target)) { return $false }
+    -not $Shim.IsGui -and $TargetSubsystem -eq 3
+}
+
 function Get-HealthAgentCatalog {
     $prompt = $script:HealthPongPrompt
     @(
@@ -430,8 +444,11 @@ function Get-HealthTargets {
             if ($dir.Source -eq 'choco' -and $file -match '\.exe$') {
                 # Shimgen shims are always console exes; the program they start may be a GUI
                 # wizard that would open a window. --shimgen-noop reports the target without running it.
-                $shim = ConvertFrom-ShimgenNoop -Text (Invoke-NativeText -FilePath $file -Arguments @('--shimgen-noop') -TimeoutSeconds 15).Text
-                if ($shim.Target -and ($shim.IsGui -or (Get-PeSubsystem -Path $shim.Target) -ne 3)) { continue }
+                $shim = ConvertFrom-ShimgenNoop -Text (Invoke-NativeText -FilePath $file -Arguments @('--shimgen-noop') -TimeoutSeconds 15 -HideWindow).Text
+                $versionInfo = (Get-Item -LiteralPath $file).VersionInfo
+                $isShim = [bool] ($shim.Target -or $shim.IsGui -or $versionInfo.FileDescription -like '*Chocolatey Shim*' -or $versionInfo.ProductName -like '*Chocolatey Shim*')
+                $targetSubsystem = if ($shim.Target) { Get-PeSubsystem -Path $shim.Target } else { 0 }
+                if (-not (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $isShim -Shim $shim -TargetSubsystem $targetSubsystem)) { continue }
             }
             $targets += New-HealthTarget -Kind 'Cli' -Name $name -Source $dir.Source -Command $file -ProbeArguments @('--version')
         }
@@ -486,7 +503,7 @@ function Invoke-HealthProbe {
     $cwd = Join-Path (Get-HealthDataDirectory) 'probe-cwd'
     New-Item -ItemType Directory -Force $cwd | Out-Null
     try {
-        $native = Invoke-NativeText -FilePath $Target.Command -Arguments $Target.ProbeArguments -TimeoutSeconds $Target.TimeoutSeconds -WorkingDirectory $cwd
+        $native = Invoke-NativeText -FilePath $Target.Command -Arguments $Target.ProbeArguments -TimeoutSeconds $Target.TimeoutSeconds -WorkingDirectory $cwd -HideWindow
         Resolve-HealthProbeResult -Target $Target -NativeResult $native
     }
     catch {
@@ -513,10 +530,41 @@ function Show-HealthToast {
     Invoke-NativeText -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-EncodedCommand', $encoded) -TimeoutSeconds 30 | Out-Null
 }
 
+function Get-PythonStoreStubPaths {
+    param(
+        [Parameter(Mandatory)] [string] $Directory
+    )
+
+    @(foreach ($name in 'python.exe', 'python3.exe') {
+        $path = Join-Path $Directory $name
+        $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        if ($item -and $item.Length -eq 0) {
+            $item.FullName
+        }
+    })
+}
+
+function Remove-PythonStoreStubs {
+    param(
+        [string] $Directory = (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps')
+    )
+
+    $paths = @(Get-PythonStoreStubPaths -Directory $Directory)
+    foreach ($path in $paths) {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+    $paths
+}
+
 function Invoke-HealthCheck {
     param(
         [switch] $Quiet
     )
+
+    $stubCleanup = @(Remove-PythonStoreStubs)
+    if ($stubCleanup.Count -gt 0 -and -not $Quiet) {
+        Write-Host "Removed $($stubCleanup.Count) python store stub(s): $($stubCleanup -join ', ')"
+    }
 
     $dir = Get-HealthDataDirectory
     $history = @(Read-HealthHistory -Directory $dir)

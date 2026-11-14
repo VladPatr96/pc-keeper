@@ -249,6 +249,14 @@ It 'reports duration and no timeout for a quick native command' {
     Assert-Equal ($result.DurationSeconds -ge 0) $true 'duration present'
 }
 
+It 'runs hidden health commands without allocating a console window' {
+    $command = 'Add-Type -TypeDefinition ''using System; using System.Runtime.InteropServices; public static class HealthConsole { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }''; [HealthConsole]::GetConsoleWindow().ToInt64()'
+    $result = Invoke-NativeText -FilePath "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" -Arguments @('-NoProfile', '-Command', $command) -TimeoutSeconds 15 -HideWindow
+
+    Assert-Equal $result.ExitCode 0 'hidden native command exits normally'
+    Assert-Equal $result.StdOut.Trim() '0' 'hidden command has no console window'
+}
+
 It 'builds a command shim that forwards arguments to the project command' {
     $text = New-CommandShimText -TargetCommand 'D:\projects\My_AI\program_update_all\program-update-all.cmd'
 
@@ -506,6 +514,60 @@ It 'exposes the PC Keeper pillars in the main menu' {
     Assert-Equal $items[4].Id 'health' 'fifth pillar is program health'
 }
 
+It 'finds zero-byte python store stubs in a directory' {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("stubtest-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    New-Item -ItemType File -Path (Join-Path $dir 'python.exe') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $dir 'python3.exe') | Out-Null
+    New-Item -ItemType File -Path (Join-Path $dir 'winget.exe') | Out-Null
+    Set-Content -LiteralPath (Join-Path $dir 'python2.exe') -Value 'real'
+
+    try {
+        $found = @(Get-PythonStoreStubPaths -Directory $dir)
+
+        Assert-Equal $found.Count 2 'stub count'
+        Assert-Equal (($found | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Sort-Object) -join ', ') 'python.exe, python3.exe' 'stub names'
+    }
+    finally {
+        Remove-Item -Recurse -Force $dir
+    }
+}
+
+It 'ignores non-empty python files when looking for store stubs' {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("stubtest-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    Set-Content -LiteralPath (Join-Path $dir 'python.exe') -Value 'not a stub'
+
+    try {
+        $found = @(Get-PythonStoreStubPaths -Directory $dir)
+
+        Assert-Equal $found.Count 0 'no stubs found'
+    }
+    finally {
+        Remove-Item -Recurse -Force $dir
+    }
+}
+
+It 'removes python store stubs but keeps other aliases' {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) ("stubtest-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    $stub = Join-Path $dir 'python.exe'
+    $keep = Join-Path $dir 'winget.exe'
+    New-Item -ItemType File -Path $stub | Out-Null
+    New-Item -ItemType File -Path $keep | Out-Null
+
+    try {
+        $removed = @(Remove-PythonStoreStubs -Directory $dir)
+
+        Assert-Equal $removed.Count 1 'one stub removed'
+        Assert-Equal (Test-Path -LiteralPath $stub) $false 'stub deleted'
+        Assert-Equal (Test-Path -LiteralPath $keep) $true 'other alias kept'
+    }
+    finally {
+        Remove-Item -Recurse -Force $dir
+    }
+}
+
 It 'builds a hidden scheduled task action for the health check' {
     $action = New-HealthScheduleAction -ScriptPath 'D:\pc-keeper\program-update-all.ps1'
 
@@ -739,6 +801,20 @@ It 'reads a chocolatey shim target and whether it is a GUI app' {
     Assert-Equal $g.IsGui $true 'gui shim flagged'
     Assert-Equal $c.IsGui $false 'console shim not flagged'
     Assert-Equal (ConvertFrom-ShimgenNoop -Text 'not a shim').Target '' 'non-shim output'
+}
+
+It 'only probes confirmed console targets behind Chocolatey shims' {
+    $console = [pscustomobject]@{ Target = 'C:\Apps\unzip.exe'; IsGui = $false }
+    $gui = [pscustomobject]@{ Target = 'C:\Apps\SFXWiz32.exe'; IsGui = $true }
+    $unknown = ConvertFrom-ShimgenNoop -Text ''
+
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $true -Shim $gui -TargetSubsystem 2) $false 'GUI wizard shim is not a CLI probe'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $true -Shim $unknown) $false 'unresolved shim must not run'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $true -Shim $console -TargetSubsystem 2) $false 'GUI target is rejected even when shim metadata says console'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $true -Shim $console -TargetSubsystem 0) $false 'unreadable target must not run'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3 -IsShim $true -Shim $console -TargetSubsystem 3) $true 'real unzip console target stays eligible'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 3) $true 'ordinary console executable stays eligible'
+    Assert-Equal (Test-IsConsoleHealthTarget -Subsystem 2) $false 'direct GUI executable must not run'
 }
 
 It 'catalogs AI agents with a PONG prompt and long timeout' {

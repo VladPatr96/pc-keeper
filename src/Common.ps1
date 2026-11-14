@@ -40,7 +40,8 @@ function Invoke-NativeText {
         [Parameter(Mandatory)] [string] $FilePath,
         [string[]] $Arguments = @(),
         [int] $TimeoutSeconds = 0,
-        [string] $WorkingDirectory = ''
+        [string] $WorkingDirectory = '',
+        [switch] $HideWindow
     )
 
     $resolvedPath = $FilePath
@@ -54,6 +55,7 @@ function Invoke-NativeText {
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $resolvedPath
     $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $HideWindow.IsPresent
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.RedirectStandardInput = $TimeoutSeconds -gt 0
