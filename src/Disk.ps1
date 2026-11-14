@@ -17,6 +17,7 @@ function Get-OffloadTargets {
         @{ Key = 'perplexity'; Source = Join-Path $env:LOCALAPPDATA 'Perplexity'; Procs = @('Comet', 'Perplexity') }
         @{ Key = 'dot-cache'; Source = Join-Path $env:USERPROFILE '.cache'; Procs = @() }
         @{ Key = 'github-desk'; Source = Join-Path $env:LOCALAPPDATA 'GitHubDesktop'; Procs = @('GitHubDesktop') }
+        @{ Key = 'open-design'; Source = Join-Path $env:APPDATA 'Open Design'; Procs = @() }
         @{ Key = 'grok'; Source = Join-Path $env:USERPROFILE '.grok'; Procs = @() }
         @{ Key = 'rustup'; Source = Join-Path $env:USERPROFILE '.rustup'; Procs = @() }
         @{ Key = 'gemini'; Source = Join-Path $env:USERPROFILE '.gemini'; Procs = @() }
@@ -27,6 +28,7 @@ function Get-OffloadTargets {
         @{ Key = 'chrome'; Source = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'; Procs = @('chrome') }
         @{ Key = 'edge'; Source = Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data'; Procs = @('msedge') }
         @{ Key = 'downloads'; Source = Join-Path $env:USERPROFILE 'Downloads'; Procs = @() }
+        @{ Key = 'desktop'; Source = Join-Path $env:USERPROFILE 'Desktop'; Procs = @() }
     ) | ForEach-Object {
         [pscustomobject]@{
             Key = $_.Key
@@ -396,6 +398,17 @@ function Format-DiskGrowthLine {
     "${Label}: $($items -join ', ')"
 }
 
+function Resolve-DiskRetryAction {
+    param(
+        [object[]] $OffloadResults = @(),
+        [switch] $IsRetry
+    )
+
+    if (-not @($OffloadResults | Where-Object Action -eq 'SkipBusy').Count) { return 'None' }
+    if ($IsRetry) { return 'Notify' }
+    'Schedule'
+}
+
 function Format-DiskNotification {
     param(
         [Parameter(Mandatory)] [double] $FreeBytes,
@@ -403,12 +416,18 @@ function Format-DiskNotification {
         [object[]] $DayGrowth = @(),
         [object[]] $WeekGrowth = @(),
         [object[]] $OffloadResults = @(),
-        [object[]] $CleanupFailures = @()
+        [object[]] $CleanupFailures = @(),
+        [switch] $IncludeBusy
     )
 
     $lines = @()
     foreach ($r in @($OffloadResults | Where-Object Status -eq 'Failed')) {
         $lines += "move $($r.Key) failed: $($r.Detail)"
+    }
+    if ($IncludeBusy) {
+        foreach ($r in @($OffloadResults | Where-Object Action -eq 'SkipBusy')) {
+            $lines += "close $($r.Detail -replace '^close first: ', '') to move $($r.Key)"
+        }
     }
     foreach ($f in @($CleanupFailures)) {
         $lines += "cleanup failed: $($f.Path)"
@@ -545,7 +564,8 @@ function Get-DriveFreeBytes {
 function Invoke-DiskMaintenance {
     param(
         [switch] $Quiet,
-        [switch] $DryRun
+        [switch] $DryRun,
+        [switch] $Retry
     )
 
     $dir = Get-DiskDataDirectory
@@ -590,8 +610,18 @@ function Invoke-DiskMaintenance {
         $report | Set-Content -LiteralPath (Join-Path $dir 'latest.txt') -Encoding utf8
     }
 
+    $retryAction = Resolve-DiskRetryAction -OffloadResults $offload -IsRetry:$Retry
+    if (-not $DryRun) {
+        if ($retryAction -eq 'Schedule') {
+            Register-DiskRetrySchedule
+        }
+        else {
+            Unregister-DiskRetrySchedule
+        }
+    }
+
     $toast = Format-DiskNotification -FreeBytes $snapshot.FreeBytes -DayGrowth $dayGrowth -WeekGrowth $weekGrowth `
-        -OffloadResults $offload -CleanupFailures $cleanupFailures
+        -OffloadResults $offload -CleanupFailures $cleanupFailures -IncludeBusy:($retryAction -eq 'Notify')
     if ($toast) {
         Show-HealthToast -Title $toast.Title -Lines $toast.Lines
     }
@@ -604,12 +634,32 @@ function Invoke-DiskMaintenance {
 
 function New-DiskScheduleAction {
     param(
-        [Parameter(Mandatory)] [string] $ScriptPath
+        [Parameter(Mandatory)] [string] $ScriptPath,
+        [switch] $Retry
     )
 
+    $retryArgument = if ($Retry) { ' -Retry' } else { '' }
     [pscustomobject]@{
         Execute = 'C:\Windows\System32\conhost.exe'
-        Argument = "--headless pwsh -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Maintain -Quiet"
+        Argument = "--headless pwsh -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Maintain$retryArgument -Quiet"
+    }
+}
+
+function Register-DiskRetrySchedule {
+    param(
+        [string] $ScriptPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'program-update-all.ps1')
+    )
+
+    $spec = New-DiskScheduleAction -ScriptPath $ScriptPath -Retry
+    $action = New-ScheduledTaskAction -Execute $spec.Execute -Argument $spec.Argument
+    $once = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(1)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+    Register-ScheduledTask -TaskName 'PcKeeperDiskMaintenanceRetry' -Action $action -Trigger $once -Settings $settings -Description 'PC Keeper: one-off retry for offload targets that were busy' -Force | Out-Null
+}
+
+function Unregister-DiskRetrySchedule {
+    if (Get-ScheduledTask -TaskName 'PcKeeperDiskMaintenanceRetry' -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName 'PcKeeperDiskMaintenanceRetry' -Confirm:$false
     }
 }
 

@@ -27,6 +27,7 @@ Export-ModuleMember -Function @(
     'Get-DiskDataDirectory',
     'Save-DiskSnapshot',
     'Read-DiskSnapshots',
+    'Resolve-DiskRetryAction',
     'Format-DiskNotification',
     'ConvertTo-DiskReportText',
     'Measure-DiskFolders',

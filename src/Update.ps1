@@ -1271,7 +1271,8 @@ function Invoke-ProgramUpdateAll {
         [switch] $Health,
         [switch] $Quiet,
         [switch] $RegisterSchedule,
-        [switch] $Maintain
+        [switch] $Maintain,
+        [switch] $Retry
     )
 
     if ($Maintain) {
@@ -1280,7 +1281,7 @@ function Invoke-ProgramUpdateAll {
             return
         }
 
-        Invoke-DiskMaintenance -Quiet:$Quiet -DryRun:$DryRun
+        Invoke-DiskMaintenance -Quiet:$Quiet -DryRun:$DryRun -Retry:$Retry
         return
     }
 

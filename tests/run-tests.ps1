@@ -1039,6 +1039,9 @@ It 'lists offload targets under the destination, without orca' {
     Assert-Equal $codex.Source (Join-Path $env:USERPROFILE '.codex') 'codex source'
     Assert-Equal $codex.Target 'D:\c-offload\codex' 'codex target'
     Assert-Equal (@($codex.Procs) -contains 'codex') $true 'codex must be closed'
+    Assert-Equal ($targets | Where-Object Key -eq 'desktop').Source (Join-Path $env:USERPROFILE 'Desktop') 'desktop source'
+    Assert-Equal @(($targets | Where-Object Key -eq 'desktop').Procs).Count 0 'desktop needs nothing closed'
+    Assert-Equal ($targets | Where-Object Key -eq 'open-design').Source (Join-Path $env:APPDATA 'Open Design') 'open design source'
     Assert-Equal @($targets.Key | Sort-Object -Unique).Count $targets.Count 'keys are unique'
 }
 
@@ -1195,6 +1198,31 @@ It 'builds a hidden scheduled action for the daily disk maintenance' {
     Assert-Equal $action.Execute 'C:\Windows\System32\conhost.exe' 'runs through conhost'
     Assert-Equal ($action.Argument -match '^--headless pwsh ') $true 'headless pwsh'
     Assert-Equal ($action.Argument -match '-File "D:\\pc-keeper\\program-update-all\.ps1" -Maintain -Quiet$') $true 'maintain quiet mode'
+}
+
+It 'decides when to schedule a retry and when to notify about busy targets' {
+    $busy = [pscustomobject]@{ Key = 'edge'; Status = 'Skipped'; Action = 'SkipBusy'; Detail = 'close first: msedge'; MovedAside = '' }
+    $moved = [pscustomobject]@{ Key = 'edge'; Status = 'OK'; Action = 'Offload'; Detail = ''; MovedAside = '' }
+
+    Assert-Equal (Resolve-DiskRetryAction -OffloadResults @($busy)) 'Schedule' 'daily run retries a busy target once'
+    Assert-Equal (Resolve-DiskRetryAction -OffloadResults @($busy) -IsRetry) 'Notify' 'retry reports a target that is still busy'
+    Assert-Equal (Resolve-DiskRetryAction -OffloadResults @($moved)) 'None' 'no retry is needed after a successful move'
+}
+
+It 'names busy targets in the retry notification only' {
+    $busy = [pscustomobject]@{ Key = 'edge'; Status = 'Skipped'; Action = 'SkipBusy'; Detail = 'close first: msedge, msedgehelper'; MovedAside = '' }
+
+    Assert-Equal (Format-DiskNotification -FreeBytes 20GB -OffloadResults @($busy)) $null 'daily busy skip stays quiet'
+
+    $retry = Format-DiskNotification -FreeBytes 20GB -OffloadResults @($busy) -IncludeBusy
+    Assert-Equal $retry.Title 'PC Keeper: disk maintenance problem' 'still busy is a maintenance problem'
+    Assert-Equal $retry.Lines[0] 'close msedge, msedgehelper to move edge' 'notification names the processes and target'
+}
+
+It 'builds a one-off retry action for disk maintenance' {
+    $action = New-DiskScheduleAction -ScriptPath 'D:\pc-keeper\program-update-all.ps1' -Retry
+
+    Assert-Equal ($action.Argument -match '-File "D:\\pc-keeper\\program-update-all\.ps1" -Maintain -Retry -Quiet$') $true 'retry maintain quiet mode'
 }
 
 It 'renders a disk maintenance report' {
