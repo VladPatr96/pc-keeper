@@ -848,6 +848,43 @@ It 'reports codex sandbox setup errors and bloated marketplace staging' {
     }
 }
 
+It 'extracts the file paths codex loads from config.toml' {
+    $text = @'
+model = "gpt-6.1-sol"
+openai_base_url = "http://127.0.0.1:4202/v1"
+model_catalog_json = "C:\\Users\\u\\.codex\\codex-router\\merged-models.json"
+model_instructions_file = 'C:\Users\u\instructions.md'
+notify = [ "C:\\x\\notify.exe", "turn-ended" ]
+[projects.'d:\projects\gone']
+trust_level = "trusted"
+'@
+    $paths = @(Get-CodexConfigFilePaths -Text $text)
+    Assert-Equal $paths.Count 2 'only *_file and *_json keys'
+    Assert-Equal $paths[0].Key 'model_catalog_json' 'json key'
+    Assert-Equal $paths[0].Path 'C:\Users\u\.codex\codex-router\merged-models.json' 'basic string unescaped'
+    Assert-Equal $paths[1].Path 'C:\Users\u\instructions.md' 'literal string kept as is'
+}
+
+It 'reports config.toml pointing at a missing file' {
+    $codexHome = Join-Path ([IO.Path]::GetTempPath()) "pck-codex-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force $codexHome | Out-Null
+    try {
+        $present = Join-Path $codexHome 'models.json'
+        Set-Content $present '{}'
+        Set-Content (Join-Path $codexHome 'config.toml') "model_catalog_json = '$present'"
+        Assert-Equal @(Get-CodexStateFindings -CodexHome $codexHome).Count 0 'existing file'
+
+        Set-Content (Join-Path $codexHome 'config.toml') "model_catalog_json = '$(Join-Path $codexHome 'gone.json')'"
+        $findings = @(Get-CodexStateFindings -CodexHome $codexHome)
+        Assert-Equal $findings.Count 1 'missing file'
+        Assert-Equal $findings[0].Name 'codex config model_catalog_json' 'names the key'
+        Assert-Equal ($findings[0].Detail -match 'gone\.json') $true 'detail has the path'
+    }
+    finally {
+        Remove-Item -Recurse -Force $codexHome
+    }
+}
+
 It 'marks a probe slow against its recent median' {
     $history = @(20, 25, 30, 28, 26) | ForEach-Object { [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = $_ } }
     $slow = [pscustomobject]@{ Key = 'Agent/agent/codex'; Status = 'OK'; DurationSeconds = 100; Detail = '' }
@@ -1003,6 +1040,49 @@ It 'lists offload targets under the destination, without orca' {
     Assert-Equal $codex.Target 'D:\c-offload\codex' 'codex target'
     Assert-Equal (@($codex.Procs) -contains 'codex') $true 'codex must be closed'
     Assert-Equal @($targets.Key | Sort-Object -Unique).Count $targets.Count 'keys are unique'
+}
+
+It 'offloads the Claude VM from the Claude-Data folder' {
+    $vm = @(Get-OffloadTargets -Destination 'D:\c-offload') | Where-Object Key -eq 'claude-vm'
+    Assert-Equal $vm.Source (Join-Path $env:LOCALAPPDATA 'Claude-Data\claude_pzs8sxrjxfjjc\vm_bundles') 'claude-vm source'
+}
+
+It 'declares app-server-control as a private folder of codex' {
+    $targets = @(Get-OffloadTargets -Destination 'D:\c-offload')
+    Assert-Equal (@(($targets | Where-Object Key -eq 'codex').PrivateDirs) -join ',') 'app-server-control' 'codex private dirs'
+    Assert-Equal @(($targets | Where-Object Key -eq 'chrome').PrivateDirs).Count 0 'others have none'
+}
+
+It 'copies data without NTFS security when offloading' {
+    # Copying security needs elevation: without it robocopy stops after the root
+    # folder, copies nothing and still exits 0, so every offload looked like a
+    # copy mismatch. Repair-OffloadAcl sets the rights after the move instead.
+    $copyArgs = @(Get-OffloadCopyArguments -Source 'C:\a' -Target 'D:\c-offload\a')
+    Assert-Equal $copyArgs[0] 'C:\a' 'source first'
+    Assert-Equal $copyArgs[1] 'D:\c-offload\a' 'target second'
+    Assert-Equal ($copyArgs -contains '/COPY:DAT') $true 'data, attributes and timestamps copied'
+    Assert-Equal ($copyArgs -contains '/COPY:DATS') $false 'no file security: it needs elevation'
+    Assert-Equal ($copyArgs -contains '/DCOPY:DAT') $true 'folder timestamps copied'
+    Assert-Equal ($copyArgs -contains '/XJ') $true 'junctions still skipped'
+}
+
+It 'checks the profile-like ACL of an offload root' {
+    $user = 'S-1-5-21-1-2-3-1001'
+    $own = [pscustomobject]@{ Sid = $user; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    $leak = [pscustomobject]@{ Sid = 'S-1-5-11'; Type = 'Allow'; Rights = 'Modify, Synchronize'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $true }
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own)) $true 'protected with own full control'
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $false -Rules @($own, $leak)) $false 'inherits from D:\'
+    Assert-Equal (Test-OffloadAclMatches -Mode Profile -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($leak)) $false 'no own entry'
+}
+
+It 'checks the user-only ACL codex requires for a private folder' {
+    $user = 'S-1-5-21-1-2-3-1001'
+    $own = [pscustomobject]@{ Sid = $user; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    $system = [pscustomobject]@{ Sid = 'S-1-5-18'; Type = 'Allow'; Rights = 'FullControl'; Inheritance = 'ContainerInherit, ObjectInherit'; IsInherited = $false }
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own)) $true 'exactly one own entry'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $true -Rules @($own, $system)) $false 'second entry'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid 'S-1-5-32-544' -IsProtected $true -Rules @($own)) $false 'foreign owner'
+    Assert-Equal (Test-OffloadAclMatches -Mode Private -UserSid $user -OwnerSid $user -IsProtected $false -Rules @($own)) $false 'not protected'
 }
 
 It 'resolves what to do with an offload target' {

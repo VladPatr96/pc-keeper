@@ -11,8 +11,8 @@ function Get-OffloadTargets {
     # orca is not here: its growth was a leak of Codex marketplace clones, which
     # the daily cleanup removes (Get-DailyCleanupPlan).
     @(
-        @{ Key = 'claude-vm'; Source = Join-Path $env:LOCALAPPDATA 'Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\vm_bundles'; Procs = @('Claude', 'claude') }
-        @{ Key = 'codex'; Source = Join-Path $env:USERPROFILE '.codex'; Procs = @('codex') }
+        @{ Key = 'claude-vm'; Source = Join-Path $env:LOCALAPPDATA 'Claude-Data\claude_pzs8sxrjxfjjc\vm_bundles'; Procs = @('Claude', 'claude') }
+        @{ Key = 'codex'; Source = Join-Path $env:USERPROFILE '.codex'; Procs = @('codex'); PrivateDirs = @('app-server-control') }
         @{ Key = 'playwright'; Source = Join-Path $env:LOCALAPPDATA 'ms-playwright'; Procs = @() }
         @{ Key = 'perplexity'; Source = Join-Path $env:LOCALAPPDATA 'Perplexity'; Procs = @('Comet', 'Perplexity') }
         @{ Key = 'dot-cache'; Source = Join-Path $env:USERPROFILE '.cache'; Procs = @() }
@@ -33,6 +33,7 @@ function Get-OffloadTargets {
             Source = $_.Source
             Target = Join-Path $Destination $_.Key
             Procs = $_.Procs
+            PrivateDirs = @(if ($_.ContainsKey('PrivateDirs')) { $_.PrivateDirs })
         }
     }
 }
@@ -80,6 +81,111 @@ function Test-OffloadCopyMatches {
     )
 
     $SourceCount -eq $TargetCount -and $SourceBytes -eq $TargetBytes
+}
+
+function Get-OffloadCopyArguments {
+    param(
+        [Parameter(Mandatory)] [string] $Source,
+        [Parameter(Mandatory)] [string] $Target
+    )
+
+    # /COPY:DAT — data, attributes and timestamps only. Copying security
+    # (/COPY:DATS) needs elevation: without it robocopy stops after the root
+    # folder, copies nothing and still exits 0. The destination rights (profile
+    # ACL, and the user-only folder codex needs) come from Repair-OffloadAcl
+    # after the move.
+    @($Source, $Target, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:2', '/W:2', '/XJ', '/NP', '/NFL', '/NDL')
+}
+
+function Test-OffloadAclMatches {
+    param(
+        [Parameter(Mandatory)] [ValidateSet('Profile', 'Private')] [string] $Mode,
+        [Parameter(Mandatory)] [string] $UserSid,
+        [string] $OwnerSid = '',
+        [Parameter(Mandatory)] [bool] $IsProtected,
+        [object[]] $Rules = @()
+    )
+
+    if (-not $IsProtected) { return $false }
+    $own = @($Rules | Where-Object {
+            $_.Sid -eq $UserSid -and $_.Type -eq 'Allow' -and $_.Rights -eq 'FullControl' -and
+            $_.Inheritance -eq 'ContainerInherit, ObjectInherit' -and -not $_.IsInherited
+        })
+    if ($Mode -eq 'Profile') { return $own.Count -gt 0 }
+    # Exactly what codex accepts for its socket folder (windows_socket_validation.rs).
+    $OwnerSid -eq $UserSid -and @($Rules).Count -eq 1 -and $own.Count -eq 1
+}
+
+function Get-OffloadAclState {
+    param(
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    $acl = Get-Acl -LiteralPath $Path
+    $sidType = [System.Security.Principal.SecurityIdentifier]
+    [pscustomobject]@{
+        Acl = $acl
+        OwnerSid = ([System.Security.Principal.NTAccount] $acl.Owner).Translate($sidType).Value
+        IsProtected = $acl.AreAccessRulesProtected
+        Rules = @($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object {
+                [pscustomobject]@{
+                    Sid = $_.IdentityReference.Value
+                    Type = [string] $_.AccessControlType
+                    Rights = [string] $_.FileSystemRights
+                    Inheritance = [string] $_.InheritanceFlags
+                    IsInherited = $_.IsInherited
+                }
+            })
+    }
+}
+
+function Set-OffloadAcl {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [ValidateSet('Profile', 'Private')] [string] $Mode,
+        [Parameter(Mandatory)] [string] $UserSid
+    )
+
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    $sids = if ($Mode -eq 'Profile') { @('S-1-5-18', 'S-1-5-32-544', $UserSid) } else { @($UserSid) }
+    if ($Mode -eq 'Private') {
+        $sidType = [System.Security.Principal.SecurityIdentifier]
+        foreach ($rule in @($acl.GetAccessRules($true, $false, $sidType))) {
+            [void] $acl.RemoveAccessRuleAll($rule)
+        }
+    }
+    foreach ($sid in $sids) {
+        $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new($sid), 'FullControl', 'ContainerInherit, ObjectInherit', 'None', 'Allow')
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Repair-OffloadAcl {
+    param(
+        [Parameter(Mandatory)] [object] $Target
+    )
+
+    $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $paths = @([pscustomobject]@{ Path = $Target.Target; Mode = 'Profile' }) +
+        @($Target.PrivateDirs | ForEach-Object { [pscustomobject]@{ Path = Join-Path $Target.Target $_; Mode = 'Private' } } | Where-Object { Test-Path -LiteralPath $_.Path })
+    $fixed = @()
+    try {
+        foreach ($p in $paths) {
+            $state = Get-OffloadAclState -Path $p.Path
+            if (Test-OffloadAclMatches -Mode $p.Mode -UserSid $user -OwnerSid $state.OwnerSid -IsProtected $state.IsProtected -Rules $state.Rules) { continue }
+            Set-OffloadAcl -Path $p.Path -Mode $p.Mode -UserSid $user
+            $fixed += $p.Path
+        }
+    }
+    catch {
+        return New-OffloadResult -Target $Target -Status 'Failed' -Action 'FixAcl' -Detail "permissions not fixed: $($_.Exception.Message)"
+    }
+    if ($fixed.Count) {
+        New-OffloadResult -Target $Target -Status 'OK' -Action 'FixAcl' -Detail "permissions fixed: $($fixed -join ', ')"
+    }
 }
 
 function New-OffloadResult {
@@ -145,7 +251,7 @@ function Invoke-Offload {
         }
 
         New-Item -ItemType Directory -Force (Split-Path $tgt -Parent) | Out-Null
-        $copy = Invoke-NativeText -FilePath 'robocopy.exe' -Arguments @($src, $tgt, '/E', '/R:2', '/W:2', '/XJ', '/NP', '/NFL', '/NDL') -TimeoutSeconds 7200
+        $copy = Invoke-NativeText -FilePath 'robocopy.exe' -Arguments (Get-OffloadCopyArguments -Source $src -Target $tgt) -TimeoutSeconds 7200
         if ($copy.TimedOut -or $copy.ExitCode -ge 8) {
             Remove-Item -LiteralPath $tgt -Recurse -Force -ErrorAction SilentlyContinue
             return New-OffloadResult -Target $Target -Status 'Failed' -Action $action -MovedAside $movedAside -Detail "robocopy failed (exit $($copy.ExitCode)), source untouched"
@@ -469,6 +575,9 @@ function Invoke-DiskMaintenance {
     foreach ($target in @(Get-OffloadTargets)) {
         if (-not $Quiet) { Write-Host "offload: $($target.Key)" }
         $offload += Invoke-Offload -Target $target -DryRun:$DryRun
+        if (-not $DryRun -and (Test-Path -LiteralPath $target.Target)) {
+            $offload += @(Repair-OffloadAcl -Target $target)
+        }
     }
 
     if (-not $Quiet) { Write-Host 'measuring folders on C...' }

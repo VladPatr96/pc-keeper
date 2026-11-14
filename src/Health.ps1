@@ -221,6 +221,21 @@ function Find-DuplicateCommands {
         }
 }
 
+function Get-CodexConfigFilePaths {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
+    )
+
+    # Codex refuses to start ("failed to load configuration ... os error 2") when
+    # a file-valued key such as model_catalog_json points at a deleted file.
+    foreach ($line in $Text -split "`r?`n") {
+        if ($line -match '^\s*([A-Za-z0-9_]+_(?:file|json))\s*=\s*(?:"((?:[^"\\]|\\.)*)"|''([^'']*)'')') {
+            $path = if ($Matches.ContainsKey(2) -and $null -ne $Matches[2]) { $Matches[2] -replace '\\(.)', '$1' } else { $Matches[3] }
+            [pscustomobject]@{ Key = $Matches[1]; Path = $path }
+        }
+    }
+}
+
 function Get-CodexStateFindings {
     param(
         [Parameter(Mandatory)] [string] $CodexHome,
@@ -237,6 +252,15 @@ function Get-CodexStateFindings {
         $count = @([IO.Directory]::EnumerateFiles($staging, '*', [IO.SearchOption]::AllDirectories) | Select-Object -First ($StagingFileLimit + 1)).Count
         if ($count -gt $StagingFileLimit) {
             $findings += [pscustomobject]@{ Name = 'codex marketplace staging'; Detail = "more than $StagingFileLimit leftover files in .tmp\marketplaces\.staging; codex starts slowly" }
+        }
+    }
+
+    $config = Join-Path $CodexHome 'config.toml'
+    if (Test-Path -LiteralPath $config) {
+        foreach ($entry in @(Get-CodexConfigFilePaths -Text (Get-Content -LiteralPath $config -Raw -Encoding UTF8))) {
+            if (-not (Test-Path -LiteralPath $entry.Path)) {
+                $findings += [pscustomobject]@{ Name = "codex config $($entry.Key)"; Detail = "config.toml: $($entry.Key) points to a missing file $($entry.Path); codex will not start" }
+            }
         }
     }
 
