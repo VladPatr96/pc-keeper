@@ -89,9 +89,12 @@ function Get-OffloadCopyArguments {
         [Parameter(Mandatory)] [string] $Target
     )
 
-    # /COPY:DATS keeps folder ACLs: a program that locked a folder down to the
-    # current user (codex app-server-control) refuses to start with D:\ ACLs.
-    @($Source, $Target, '/E', '/COPY:DATS', '/DCOPY:DAT', '/R:2', '/W:2', '/XJ', '/NP', '/NFL', '/NDL')
+    # /COPY:DAT — data, attributes and timestamps only. Copying security
+    # (/COPY:DATS) needs elevation: without it robocopy stops after the root
+    # folder, copies nothing and still exits 0. The destination rights (profile
+    # ACL, and the user-only folder codex needs) come from Repair-OffloadAcl
+    # after the move.
+    @($Source, $Target, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:2', '/W:2', '/XJ', '/NP', '/NFL', '/NDL')
 }
 
 function Test-OffloadAclMatches {

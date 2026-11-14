@@ -1053,11 +1053,15 @@ It 'declares app-server-control as a private folder of codex' {
     Assert-Equal @(($targets | Where-Object Key -eq 'chrome').PrivateDirs).Count 0 'others have none'
 }
 
-It 'copies folder permissions when offloading' {
+It 'copies data without NTFS security when offloading' {
+    # Copying security needs elevation: without it robocopy stops after the root
+    # folder, copies nothing and still exits 0, so every offload looked like a
+    # copy mismatch. Repair-OffloadAcl sets the rights after the move instead.
     $copyArgs = @(Get-OffloadCopyArguments -Source 'C:\a' -Target 'D:\c-offload\a')
     Assert-Equal $copyArgs[0] 'C:\a' 'source first'
     Assert-Equal $copyArgs[1] 'D:\c-offload\a' 'target second'
-    Assert-Equal ($copyArgs -contains '/COPY:DATS') $true 'file security copied'
+    Assert-Equal ($copyArgs -contains '/COPY:DAT') $true 'data, attributes and timestamps copied'
+    Assert-Equal ($copyArgs -contains '/COPY:DATS') $false 'no file security: it needs elevation'
     Assert-Equal ($copyArgs -contains '/DCOPY:DAT') $true 'folder timestamps copied'
     Assert-Equal ($copyArgs -contains '/XJ') $true 'junctions still skipped'
 }
